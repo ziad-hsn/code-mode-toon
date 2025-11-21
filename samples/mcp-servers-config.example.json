@@ -1,0 +1,46 @@
+{
+  "mcpServers": {
+    "go-development": {
+      "command": "mcp-gopls",
+      "priority": "critical"
+    },
+    "workspace-lsp": {
+      "command": "mcp-language-server",
+      "args": ["--workspace", "/path/to/workspace", "--lsp", "gopls"],
+      "env": {
+        "GOPLS_CONFIG": "{\"build.buildFlags\":[\"-tags=debug\"]}"
+      }
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "lazy": true
+    },
+    "structured-thinking": {
+      "command": "npx",
+      "args": ["-y", "structured-thinking"],
+      "lazy": true
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp", "--api-key", "<replace-with-context7-api-key>"],
+      "lazy": true
+    },
+    "perplexity": {
+      "command": "npx",
+      "args": ["-y", "server-perplexity-ask"],
+      "env": {
+        "PERPLEXITY_API_KEY": "<replace-with-api-key>"
+      },
+      "lazy": true
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/workspace"],
+      "lazy": false
+    }
+  },
+  "optimizations": {
+    "projectRoot": "/path/to/workspace"
+  }
+}
