@@ -3,9 +3,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { spawn, ChildProcess } from "child_process";
 import * as vm from "node:vm";
-import { TOONEncoder, compressToolSchema } from "./toon-encoder.js";
+import { TOONEncoder } from "./toon-encoder.js";
 import { readFile } from "fs/promises";
-import { EventSource } from "eventsource";
+import * as path from "path";
+import * as os from "os";
+import { TIMEOUTS, LIMITS } from "./constants.js";
 
 interface MCPServer {
   name: string;
@@ -26,32 +28,105 @@ interface LoadedMCPServer {
 
 interface CodeModeConfig {
   enableTOON: boolean;
-  toonLevel: 'aggressive' | 'balanced' | 'minimal';
   projectRoot: string;
 }
 
 class CodeModeServer {
+  private static readonly ORCHESTRATOR_VENDOR = "code-mode-toon";
+  private static readonly ORCHESTRATOR_SIGNATURE = "code-mode-toon-orchestrator-v1";
   private server: Server;
   private mcpServers: Map<string, LoadedMCPServer> = new Map();
   private lazyServers: Set<string> = new Set(); // MCPs to load on-demand
+  private serverStates: Map<string, 'loading' | 'ready' | 'failed'> = new Map();
   private config!: { mcpServers: Record<string, MCPServer>; optimizations?: Record<string, any> };
   private codeModeConfig: CodeModeConfig;
   private configPath: string;
-  private toolCache: Map<string, any> = new Map(); // Cache for tool results
   private loadingServers: Map<string, Promise<LoadedMCPServer>> = new Map();
   private childProcesses: Set<ChildProcess> = new Set();
+  private readonly usageSections: Record<string, { title: string; summary: string; steps?: string[]; tips?: string[] }> = {
+    overview: {
+      title: "Overview",
+      summary: "CodeModeTOON is an MCP orchestrator that sits between your AI client and multiple downstream MCP servers. It handles lazy-loading, token-efficient TOON compression, and cross-platform path normalization so agents can iterate quickly without juggling configs."
+    },
+    quickstart: {
+      title: "Quick Start",
+      summary: "Minimal flow to get productive once the server is running:",
+      steps: [
+        "Call list_servers to see which MCPs are already loaded vs available for lazy loading.",
+        "Use search_tools {query:\"diag\"} to discover tool names across loaded servers. Set hydrateLazy=true if you need all servers online first.",
+        "Call get_tool_api {serverName:\"workspace-lsp\"} (or any server) to inspect tool schemas and parameters.",
+        "When calling execute_code, start with set_project_root to align relative paths, then invoke servers[\"name\"].tool(...) inside the sandbox."
+      ]
+    },
+    execute_code: {
+      title: "execute_code",
+      summary: "Runs TypeScript/JavaScript in a vm sandbox with auto-proxied MCP tools.",
+      steps: [
+        "Inputs: { code: string, returnFormat?: \"json\" | \"toon\" }.",
+        "Sandbox helpers: servers[server].tool(payload), TOON.encode/decode, get_tool_api, search_tools, and console logging.",
+        "Return payload includes captured logs plus the normalized result in JSON or TOON.",
+        "Guardrails: 100KB code size limit, 60s execution timeout, automatic path normalization for tool arguments."
+      ],
+      tips: [
+        "Use servers[...] proxies for batching (e.g., loop through files and call diagnostics).",
+        "Check tool return types before assuming arrays—some MCPs respond with strings such as \"[]\" or \"No diagnostics found\"."
+      ]
+    },
+    search_tools: {
+      title: "search_tools",
+      summary: "Keyword search across tool names/descriptions for servers currently loaded.",
+      steps: [
+        "Inputs: { query: string, detailLevel?: \"name\" | \"name+description\" | \"full\", hydrateLazy?: boolean, maxLazyServers?: number }.",
+        "When hydrateLazy=true the orchestrator will spin up deferred servers up to maxLazyServers before searching.",
+        "detailLevel controls verbosity so UIs can show lightweight or full schema output."
+      ],
+      tips: [
+        "Run search_tools before execute_code to plan which servers to touch.",
+        "Use hydrateLazy sparingly; it forces downstream process launches."
+      ]
+    },
+    best_practices: {
+      title: "Best Practices",
+      summary: "Guidance for agent workflows.",
+      steps: [
+        "Call set_project_root whenever the working tree changes (especially in multi-workspace agents).",
+        "Use get_tool_api to cache tool schemas client-side; pair with TOON.encode to trim token usage for large schemas.",
+        "Prefer list_servers over manual assumptions so you know which MCPs are actually online."
+      ],
+      tips: [
+        "All textual outputs normalize Windows paths; if you rely on original casing include the raw server response in logs.",
+        "When bridging remote MCPs over HTTP, keep env vars in the config file ignored by Git (`mcp-servers-config*.json`)."
+      ]
+    },
+    troubleshooting: {
+      title: "Troubleshooting",
+      summary: "Common recovery steps.",
+      steps: [
+        "If a lazy server fails to hydrate, inspect logs in your MCP client—they include the downstream error message.",
+        "Use list_servers to confirm whether a server is lazy, loaded, or disabled.",
+        "execute_code returns combined logs + error text; include both when filing issues."
+      ],
+      tips: [
+        "For stubborn stdio servers, restart CodeModeTOON so the graceful shutdown handler can drain lingering child processes."
+      ]
+    }
+  };
 
   private constructor(configPath: string) {
     this.configPath = configPath;
     this.server = new Server(
-      { name: "code-mode-toon", version: "2.1.0" },
+      {
+        name: "code-mode-toon",
+        version: "1.0.0",
+        vendor: CodeModeServer.ORCHESTRATOR_VENDOR,
+        signature: CodeModeServer.ORCHESTRATOR_SIGNATURE
+      },
       { capabilities: { tools: {} } }
     );
 
     // Default config, will be overwritten by loadConfig
     this.codeModeConfig = {
       enableTOON: true,
-      toonLevel: 'aggressive',
       projectRoot: process.env.PROJECT_ROOT || process.cwd()
     };
   }
@@ -60,6 +135,29 @@ class CodeModeServer {
   private log(level: "INFO" | "WARN" | "ERROR", message: string) {
     const timestamp = new Date().toISOString().split('T')[1].slice(0, -1); // HH:mm:ss.sss
     console.error(`[${timestamp}] [${level}] [CodeMode+TOON] ${message}`);
+  }
+
+  private isSelfOrchestrator(serverInfo: any): boolean {
+    if (!serverInfo) {
+      return false;
+    }
+
+    const nameMatch = serverInfo.name === "code-mode-toon";
+    const vendorMatch = serverInfo.vendor === CodeModeServer.ORCHESTRATOR_VENDOR;
+    const signatureMatch = serverInfo.signature === CodeModeServer.ORCHESTRATOR_SIGNATURE;
+
+    // Prefer explicit vendor + signature match for new versions
+    if (vendorMatch && signatureMatch) {
+      return true;
+    }
+
+    // Fallback to name match when older versions do not expose vendor/signature
+    if (nameMatch && (vendorMatch || signatureMatch)) {
+      return true;
+    }
+
+    // As a final safeguard, treat name-only matches as self-reference
+    return nameMatch;
   }
 
   static async create(configPath: string): Promise<CodeModeServer> {
@@ -107,7 +205,7 @@ class CodeModeServer {
             }) + "\n");
 
             // Wait briefly for shutdown response (optional, but good practice)
-            await new Promise<void>(resolve => setTimeout(resolve, 500));
+            await new Promise<void>(resolve => setTimeout(resolve, TIMEOUTS.SHUTDOWN_GRACE_MS));
 
             // 2. Send exit notification
             child.stdin.write(JSON.stringify({
@@ -122,7 +220,7 @@ class CodeModeServer {
         // 3. Force kill if still running after a short delay
         setTimeout(() => {
           if (!child.killed) child.kill();
-        }, 1000);
+        }, TIMEOUTS.FORCE_KILL_MS);
       });
 
       await Promise.all(shutdownPromises);
@@ -143,7 +241,7 @@ class CodeModeServer {
         tools: [
           {
             name: "execute_code",
-            description: `Execute TypeScript code with MCP tool access (99.8% token reduction)
+            description: `Execute TypeScript code with MCP tool access (TOON-compressed responses)
 
 AVAILABLE SERVERS:
 Loaded: ${availableServers}
@@ -178,7 +276,7 @@ RETURN VALUE GOTCHAS:
                 returnFormat: {
                   type: "string",
                   enum: ["json", "toon"],
-                  default: "json"
+                  default: "toon"
                 }
               },
               required: ["code"]
@@ -195,6 +293,16 @@ RETURN VALUE GOTCHAS:
                   type: "string",
                   enum: ["name", "name+description", "full"],
                   default: "name+description"
+                },
+                hydrateLazy: {
+                  type: "boolean",
+                  description: "Set true to hydrate lazy servers before searching",
+                  default: false
+                },
+                maxLazyServers: {
+                  type: "integer",
+                  minimum: 1,
+                  description: "Optional cap for how many lazy servers to hydrate when searching"
                 }
               },
               required: ["query"]
@@ -229,6 +337,20 @@ RETURN VALUE GOTCHAS:
               type: "object",
               properties: {}
             }
+          },
+          {
+            name: "usage_guide",
+            description: "Retrieve inline documentation for CodeModeTOON (sections: overview, quickstart, execute_code, search_tools, best_practices, troubleshooting)",
+            inputSchema: {
+              type: "object",
+              properties: {
+                section: {
+                  type: "string",
+                  enum: ["overview", "quickstart", "execute_code", "search_tools", "best_practices", "troubleshooting"],
+                  description: "Optional section name to focus on. If omitted, returns the table of contents."
+                }
+              }
+            }
           }
         ]
       };
@@ -238,9 +360,16 @@ RETURN VALUE GOTCHAS:
       const { name, arguments: args } = request.params;
 
       if (name === "execute_code") {
-        return await this.executeCode((args as any).code, (args as any).returnFormat || "json");
+        return await this.executeCode((args as any).code, (args as any).returnFormat || "toon");
       } else if (name === "search_tools") {
-        return await this.searchTools((args as any).query, (args as any).detailLevel);
+        return await this.searchTools(
+          (args as any).query,
+          (args as any).detailLevel,
+          {
+            hydrateLazy: Boolean((args as any).hydrateLazy),
+            maxLazyServers: (args as any).maxLazyServers
+          }
+        );
       } else if (name === "get_tool_api") {
         return await this.getToolAPI((args as any).serverName);
       } else if (name === "set_project_root") {
@@ -264,6 +393,8 @@ RETURN VALUE GOTCHAS:
             }, null, 2)
           }]
         };
+      } else if (name === "usage_guide") {
+        return this.getUsageGuide((args as any).section);
       }
 
       throw new Error(`Unknown tool: ${name}`);
@@ -274,7 +405,7 @@ RETURN VALUE GOTCHAS:
     this.log("INFO", "Loading MCP servers...");
     this.log("INFO", `Project root: ${this.codeModeConfig.projectRoot}`);
 
-    const loadPromises: Promise<void>[] = [];
+    const eagerLoadPromises: Promise<void>[] = [];
     const startTotal = Date.now();
 
     for (const [name, config] of Object.entries(this.config.mcpServers)) {
@@ -283,33 +414,60 @@ RETURN VALUE GOTCHAS:
         continue;
       }
 
-      // Check if lazy-load
+      // Lazy-load servers are deferred until first use
       if ((config as any).lazy) {
         this.lazyServers.add(name);
-        this.log("INFO", `deferred ${name} for lazy loading`);
+        this.log("INFO", `Deferred ${name} for lazy loading`);
         continue;
       }
 
-      // Load critical servers in parallel
-      const promise = this.loadMCPServer(name, config)
+      this.serverStates.set(name, "loading");
+
+      const loadPromise = this.loadMCPServer(name, config)
         .then((loaded) => {
           this.mcpServers.set(name, loaded);
+          this.serverStates.set(name, "ready");
+          this.log("INFO", `Loaded ${name} (${loaded.tools.length} tools)`);
         })
         .catch((err: any) => {
-          this.log("ERROR", `failed to load ${name}: ${err.message}`);
+          this.serverStates.set(name, "failed");
+          const message = err instanceof Error ? err.message : String(err);
+          this.log("ERROR", `Failed to load ${name}: ${message}`);
+          throw err;
         });
 
-      loadPromises.push(promise);
+      eagerLoadPromises.push(loadPromise);
     }
 
-    await Promise.allSettled(loadPromises);
+    if (eagerLoadPromises.length === 0) {
+      this.log("INFO", "No eager-load MCP servers configured; awaiting lazy/on-demand loads.");
+      return;
+    }
 
-    const duration = Date.now() - startTotal;
-    const totalTools = Array.from(this.mcpServers.values())
-      .reduce((sum, s) => sum + s.tools.length, 0);
+    let firstReadyLogged = false;
+    try {
+      await Promise.any(eagerLoadPromises);
+      firstReadyLogged = true;
+      this.log("INFO", "First MCP server ready, enabling tools immediately.");
+    } catch {
+      this.log("WARN", "All eager MCP servers failed to load. Tools will rely on lazy/on-demand servers.");
+    }
 
-    this.log("INFO", `Loaded: ${this.mcpServers.size} servers, ${totalTools} tools in ${duration}ms`);
-    this.log("INFO", `Lazy-load available: ${this.lazyServers.size} servers`);
+    if (!firstReadyLogged) {
+      // Even if all failed, continue to monitor completions for logging.
+      this.log("WARN", "Continuing startup while MCP servers resolve in background.");
+    }
+
+    Promise.allSettled(eagerLoadPromises).then((results) => {
+      const duration = Date.now() - startTotal;
+      const readyCount = Array.from(this.serverStates.values()).filter((state) => state === "ready").length;
+      const failedCount = results.filter((r) => r.status === "rejected").length;
+      const totalTools = Array.from(this.mcpServers.values()).reduce((sum, s) => sum + s.tools.length, 0);
+      this.log("INFO", `Background load complete after ${duration}ms. Ready: ${readyCount}, Failed: ${failedCount}, Tools: ${totalTools}, Lazy: ${this.lazyServers.size}.`);
+    }).catch((err) => {
+      // This should never happen with allSettled, but add for safety
+      this.log("ERROR", `Unexpected error in background load: ${err}`);
+    });
   }
 
   private async loadMCPServer(name: string, config: MCPServer): Promise<LoadedMCPServer> {
@@ -322,13 +480,92 @@ RETURN VALUE GOTCHAS:
   }
 
   private async loadHttpMCP(name: string, config: MCPServer): Promise<LoadedMCPServer> {
-    // For URL-based MCPs, return a lazy-loaded stub
-    // They will be loaded on first use
+    if (!config.url) {
+      throw new Error(`Invalid config for ${name}: missing url`);
+    }
+
+    const send = async (payload: any, timeoutMs = 30000): Promise<any> => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+        const response = await fetch(config.url!, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
+
+        if (!response.ok) {
+          const body = await response.text();
+          throw new Error(`HTTP MCP ${name} request failed (${response.status}): ${body}`);
+        }
+
+        return await response.json() as any;
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+
+    const initId = Date.now();
+    const initResponse: any = await send({
+      jsonrpc: "2.0",
+      id: initId,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: {
+          name: "code-mode-toon",
+          version: "1.0.0"
+        }
+      }
+    });
+
+    if (this.isSelfOrchestrator(initResponse?.result?.serverInfo)) {
+      this.log("WARN", `Skipping self-referential server "${name}" detected via MCP handshake.`);
+      throw new Error(`Self-referential server "${name}" detected via MCP handshake`);
+    }
+
+    if (!initResponse?.result) {
+      throw new Error(`HTTP MCP ${name} initialize failed: ${JSON.stringify(initResponse)}`);
+    }
+
+    const listId = initId + 1;
+    const listResponse: any = await send({
+      jsonrpc: "2.0",
+      id: listId,
+      method: "tools/list"
+    });
+
+    if (!listResponse?.result?.tools) {
+      throw new Error(`HTTP MCP ${name} tools/list failed: ${JSON.stringify(listResponse)}`);
+    }
+
+    this.log("INFO", `Connected to HTTP MCP ${name} (${listResponse.result.tools.length} tools)`);
+
     return {
       name,
-      tools: [],
+      tools: listResponse.result.tools,
       call: async (toolName: string, args: any) => {
-        throw new Error(`HTTP MCP ${name} not yet implemented`);
+        const id = Date.now();
+        const normalizedArgs = this.normalizeArguments(args);
+        const result: any = await send({
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name: toolName, arguments: normalizedArgs }
+        });
+
+        if (result?.error) {
+          throw new Error(`HTTP MCP ${name} tool error: ${result.error.message || JSON.stringify(result.error)}`);
+        }
+
+        if (!result?.result) {
+          throw new Error(`HTTP MCP ${name} tool call missing result: ${JSON.stringify(result)}`);
+        }
+
+        return result.result;
       }
     };
   }
@@ -356,8 +593,9 @@ RETURN VALUE GOTCHAS:
 
     return new Promise((resolve, reject) => {
       let buffer = "";
-      // Increased timeout to 120s for uvx/slow startups
-      const timeout = setTimeout(() => reject(new Error(`Timeout loading MCP ${name} after 120s`)), 120000);
+
+      // Split timeouts: short for initial handshake, longer for tools list
+      let timeout = setTimeout(() => reject(new Error(`Timeout during initialize handshake for ${name} after ${TIMEOUTS.HANDSHAKE_TIMEOUT_MS}ms`)), TIMEOUTS.HANDSHAKE_TIMEOUT_MS);
 
       let initialized = false;
       const initId = 1;
@@ -372,7 +610,7 @@ RETURN VALUE GOTCHAS:
           capabilities: {},
           clientInfo: {
             name: "code-mode-toon",
-            version: "2.1.0"
+            version: "1.0.0"
           }
         }
       });
@@ -394,7 +632,19 @@ RETURN VALUE GOTCHAS:
 
             // 2. Handle Initialize Response
             if (!initialized && msg.id === initId && msg.result) {
+              if (this.isSelfOrchestrator(msg.result.serverInfo)) {
+                clearTimeout(timeout);
+                this.log("WARN", `Skipping self-referential server "${name}" detected via MCP handshake.`);
+                child.kill();
+                reject(new Error(`Self-referential server "${name}" detected via MCP handshake`));
+                return;
+              }
               initialized = true;
+
+              // Extend timeout for tools/list which can be slower (up to 120s)
+              clearTimeout(timeout);
+              timeout = setTimeout(() => reject(new Error(`Timeout listing tools for ${name} after ${TIMEOUTS.TOOLS_LIST_TIMEOUT_MS}ms`)), TIMEOUTS.TOOLS_LIST_TIMEOUT_MS);
+
               // 3. Send Initialized Notification
               send({
                 jsonrpc: "2.0",
@@ -442,7 +692,7 @@ RETURN VALUE GOTCHAS:
     return new Promise((resolve, reject) => {
       let buffer = "";
       // Increase timeout for slow operations like go_to_definition
-      const timeout = setTimeout(() => reject(new Error(`Tool timeout after 60s: ${toolName}`)), 60000);
+      const timeout = setTimeout(() => reject(new Error(`Tool timeout after ${TIMEOUTS.TOOL_CALL_TIMEOUT_MS}ms: ${toolName}`)), TIMEOUTS.TOOL_CALL_TIMEOUT_MS);
 
       const onData = (data: Buffer) => {
         buffer += data.toString();
@@ -453,10 +703,20 @@ RETURN VALUE GOTCHAS:
           if (!line.trim()) continue;
           try {
             const msg = JSON.parse(line);
-            if (msg.id === id && msg.result) {
-              clearTimeout(timeout);
-              child.stdout.off("data", onData);
-              resolve(msg.result);
+            if (msg.id === id) {
+              if (msg.result) {
+                clearTimeout(timeout);
+                child.stdout.off("data", onData);
+                resolve(msg.result);
+                return;
+              }
+              if (msg.error) {
+                clearTimeout(timeout);
+                child.stdout.off("data", onData);
+                const errorMessage = msg.error.message || JSON.stringify(msg.error);
+                reject(new Error(`STDIO MCP tool error (${toolName}): ${errorMessage}`));
+                return;
+              }
             }
           } catch { }
         }
@@ -470,7 +730,7 @@ RETURN VALUE GOTCHAS:
     if (args === undefined || args === null) {
       return args;
     }
-    if (typeof args === "string" && (args.includes("/") || args.includes("\\"))) {
+    if (typeof args === "string" && this.shouldNormalizePath(args)) {
       return this.normalizePath(args);
     }
     if (Array.isArray(args)) {
@@ -484,6 +744,22 @@ RETURN VALUE GOTCHAS:
       return normalized;
     }
     return args;
+  }
+
+  private shouldNormalizePath(value: string): boolean {
+    if (typeof value !== "string" || value.length === 0) {
+      return false;
+    }
+    const trimmed = value.trim();
+    return (
+      trimmed.startsWith('/') ||
+      trimmed.startsWith('./') ||
+      trimmed.startsWith('../') ||
+      trimmed.startsWith('file://') ||
+      trimmed.startsWith('~') ||
+      trimmed.startsWith('\\') ||
+      /^[A-Za-z]:[\\/]/.test(trimmed)
+    );
   }
 
   private normalizePath(path: string): string {
@@ -564,10 +840,89 @@ RETURN VALUE GOTCHAS:
     return this.normalizePathsInResult(unwrapped);
   }
 
+  private getUsageGuide(section?: string) {
+    const availableSections = Object.keys(this.usageSections);
+    const hasSection = Boolean(section && section.trim().length > 0);
+    const normalizedSection = hasSection ? section!.trim().toLowerCase() : undefined;
+
+    if (normalizedSection && !this.usageSections[normalizedSection]) {
+      return {
+        content: [{
+          type: "text",
+          text: `Unknown usage section "${section}". Available: ${availableSections.join(", ")}`
+        }],
+        isError: true
+      };
+    }
+
+    if (!normalizedSection) {
+      const overview = availableSections.map((key) => {
+        const entry = this.usageSections[key];
+        return `- ${entry.title}: ${entry.summary}`;
+      }).join("\n");
+
+      const body = [
+        "CodeModeTOON Usage Guide",
+        "Call usage_guide { section: \"<name>\" } to dive deeper into a specific topic.",
+        `Sections:\n${overview}`
+      ].join("\n\n");
+
+      return {
+        content: [{
+          type: "text",
+          text: body
+        }]
+      };
+    }
+
+    const sectionDef = this.usageSections[normalizedSection];
+    const lines: string[] = [
+      `${sectionDef.title}`,
+      sectionDef.summary
+    ];
+
+    if (sectionDef.steps?.length) {
+      lines.push(
+        "",
+        "Steps:",
+        ...sectionDef.steps.map((step, idx) => `${idx + 1}. ${step}`)
+      );
+    }
+
+    if (sectionDef.tips?.length) {
+      lines.push(
+        "",
+        "Tips:",
+        ...sectionDef.tips.map((tip) => `- ${tip}`)
+      );
+    }
+
+    return {
+      content: [{
+        type: "text",
+        text: lines.join("\n")
+      }]
+    };
+  }
+
   private async ensureServerLoaded(name: string): Promise<LoadedMCPServer> {
     // Lazy-load servers on demand with single-flight protection
     if (this.mcpServers.has(name)) {
       return this.mcpServers.get(name)!;
+    }
+
+    const currentState = this.serverStates.get(name);
+    if (currentState === "loading") {
+      // Wait for in-flight load instead of throwing error
+      const inFlight = this.loadingServers.get(name);
+      if (inFlight) {
+        this.log("INFO", `Server "${name}" is already loading, waiting for completion...`);
+        return inFlight;
+      }
+      throw new Error(`Server "${name}" is still loading. Use get_server_status for details and try again shortly.`);
+    }
+    if (currentState === "failed") {
+      throw new Error(`Server "${name}" failed to load earlier. Check logs or restart CodeModeTOON.`);
     }
 
     const config = this.config.mcpServers[name];
@@ -583,14 +938,18 @@ RETURN VALUE GOTCHAS:
       return inFlight;
     }
 
+    this.serverStates.set(name, "loading");
+
     const loadPromise = this.loadMCPServer(name, config)
       .then((loaded) => {
         this.mcpServers.set(name, loaded);
         this.lazyServers.delete(name);
+        this.serverStates.set(name, "ready");
         console.error(`[CodeMode+TOON] loaded ${name} on-demand (${loaded.tools.length} tools)`);
         return loaded;
       })
       .catch((err) => {
+        this.serverStates.set(name, "failed");
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[CodeMode+TOON] failed to load ${name} on-demand: ${message}`);
         throw err;
@@ -603,21 +962,25 @@ RETURN VALUE GOTCHAS:
     return loadPromise;
   }
 
-  private async ensureAllLazyServersLoaded() {
-    // Hydrate all deferred servers before tool discovery
+  private async hydrateLazyServers(limit?: number) {
     const pending = Array.from(this.lazyServers);
-    for (const name of pending) {
-      try {
-        await this.ensureServerLoaded(name);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`[CodeMode+TOON] lazy load failed for ${name}: ${message}`);
-      }
+    const targets = typeof limit === "number" ? pending.slice(0, limit) : pending;
+    if (targets.length === 0) {
+      return;
     }
+
+    this.log("INFO", `Hydrating ${targets.length} lazy server(s): ${targets.join(", ")}`);
+    await Promise.allSettled(targets.map((name) => this.ensureServerLoaded(name)));
   }
 
-  private async searchTools(query: string, detailLevel: string) {
-    await this.ensureAllLazyServersLoaded();
+  private async searchTools(
+    query: string,
+    detailLevel: string = "name+description",
+    options?: { hydrateLazy?: boolean; maxLazyServers?: number }
+  ) {
+    if (options?.hydrateLazy) {
+      await this.hydrateLazyServers(options.maxLazyServers);
+    }
 
     const results: any[] = [];
     const lowerQuery = query.toLowerCase();
@@ -685,7 +1048,38 @@ RETURN VALUE GOTCHAS:
     }
   }
 
-  private async executeCode(code: string, returnFormat: string = "json") {
+  private async executeCode(code: string, returnFormat: string = "toon") {
+    // Input validation
+    if (!code || typeof code !== 'string') {
+      return {
+        content: [{
+          type: "text",
+          text: "Error: 'code' parameter must be a non-empty string"
+        }],
+        isError: true
+      };
+    }
+
+    if (code.length > LIMITS.CODE_SIZE_BYTES) {
+      return {
+        content: [{
+          type: "text",
+          text: `Error: Code exceeds maximum length of ${LIMITS.CODE_SIZE_BYTES} bytes (received ${code.length} bytes)`
+        }],
+        isError: true
+      };
+    }
+
+    if (returnFormat && !['json', 'toon'].includes(returnFormat)) {
+      return {
+        content: [{
+          type: "text",
+          text: `Error: Invalid returnFormat '${returnFormat}'. Must be 'json' or 'toon'`
+        }],
+        isError: true
+      };
+    }
+
     const logs: string[] = [];
     const executionStart = Date.now();
 
@@ -747,19 +1141,63 @@ RETURN VALUE GOTCHAS:
       }
     };
 
-    const context = vm.createContext(sandbox);
+    // Track timers for cleanup
+    const timers: NodeJS.Timeout[] = [];
+    const intervals: NodeJS.Timeout[] = [];
+
+    // Wrap setTimeout/setInterval to track them
+    (sandbox as any).setTimeout = (callback: (...args: any[]) => void, ms?: number, ...args: any[]) => {
+      const id = setTimeout(callback, ms, ...args);
+      timers.push(id);
+      return id;
+    };
+    (sandbox as any).setInterval = (callback: (...args: any[]) => void, ms?: number, ...args: any[]) => {
+      const id = setInterval(callback, ms, ...args);
+      intervals.push(id);
+      return id;
+    };
+    (sandbox as any).clearTimeout = (id: NodeJS.Timeout) => {
+      const index = timers.indexOf(id);
+      if (index > -1) timers.splice(index, 1);
+      clearTimeout(id);
+    };
+    (sandbox as any).clearInterval = (id: NodeJS.Timeout) => {
+      const index = intervals.indexOf(id);
+      if (index > -1) intervals.splice(index, 1);
+      clearInterval(id);
+    };
+
+    const context = vm.createContext(sandbox, {
+      codeGeneration: {
+        strings: false,  // Prevent eval(), new Function()
+        wasm: false      // Prevent WebAssembly
+      }
+    });
 
     try {
       const wrappedCode = `(async () => { ${code} })()`;
-      await vm.runInContext(wrappedCode, context, { timeout: 60000 });
+      const result = await vm.runInContext(wrappedCode, context, { timeout: TIMEOUTS.CODE_EXECUTION_TIMEOUT_MS });
 
       const executionTime = Date.now() - executionStart;
-      const output = logs.join("\n") || "Code executed successfully (no output)";
+      const normalizedFormat = returnFormat === "toon" ? "toon" : "json";
+      const normalizedResult = this.normalizePathsInResult(result);
+      const safeResult = normalizedResult === undefined ? null : normalizedResult;
+      const formattedResult =
+        normalizedFormat === "toon"
+          ? TOONEncoder.encode(safeResult)
+          : JSON.stringify(safeResult, null, 2);
+
+      const sections: string[] = [];
+      if (logs.length) {
+        sections.push(`Logs:\n${logs.join("\n")}`);
+      }
+      sections.push(`Result (${normalizedFormat.toUpperCase()}):\n${formattedResult}`);
+      sections.push(`[Execution: ${executionTime}ms]`);
 
       return {
         content: [{
           type: "text",
-          text: `${output}\n\n[Execution: ${executionTime}ms | Format: ${returnFormat}]`
+          text: sections.join("\n\n")
         }]
       };
     } catch (err: any) {
@@ -770,21 +1208,56 @@ RETURN VALUE GOTCHAS:
         }],
         isError: true
       };
+    } finally {
+      // Cleanup timers to prevent memory leaks
+      timers.forEach(clearTimeout);
+      intervals.forEach(clearInterval);
     }
   }
 
   async start() {
-    await this.loadMCPServers();
-
     const transport = new StdioServerTransport();
-    await this.server.connect(transport);
 
-    console.error("[CodeMode+TOON] Server ready!");
-    console.error("[CodeMode+TOON] Token savings: 99.8% reduction");
+    // Prevent infinite loops: Wait for client handshake BEFORE loading downstream servers.
+    // If we are a nested instance, the parent will detect our vendor/signature in the
+    // initialize response and kill us before we receive the 'initialized' notification.
+    this.server.oninitialized = async () => {
+      this.log("INFO", "Client initialized. Loading downstream servers...");
+      await this.loadMCPServers();
+
+      const loadingCount = Array.from(this.serverStates.values()).filter((state) => state === 'loading').length;
+      this.log('INFO', `Startup availability: ready=${this.mcpServers.size}, loading=${loadingCount}, lazy=${this.lazyServers.size}`);
+      console.error("[CodeMode+TOON] Server ready!");
+    };
+
+    await this.server.connect(transport);
+    this.log("INFO", "MCP transport connected. Waiting for client initialization...");
   }
 }
 
-const configPath = process.argv[2] || "./mcp-servers-config.json";
-CodeModeServer.create(configPath)
+const defaultConfigPath = path.join(os.homedir(), '.cursor', 'mcp.json');
+
+function expandPath(input: string): string {
+  if (!input) {
+    return input;
+  }
+  if (input === '~') {
+    return os.homedir();
+  }
+  if (input.startsWith('~/')) {
+    return path.join(os.homedir(), input.slice(2));
+  }
+  return input;
+}
+
+const rawConfigPath =
+  process.argv[2] ||
+  process.env.CODE_MODE_TOON_CONFIG ||
+  defaultConfigPath;
+
+const resolvedConfigPath = path.resolve(expandPath(rawConfigPath));
+console.error(`[CodeMode+TOON] Using config: ${resolvedConfigPath}`);
+
+CodeModeServer.create(resolvedConfigPath)
   .then(server => server.start())
   .catch(console.error);
