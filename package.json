@@ -1,10 +1,11 @@
 {
   "name": "cursor-code-mode-toon",
-  "version": "2.0.0",
+  "version": "1.0.0",
   "type": "module",
   "main": "dist/code-mode-toon-server.js",
   "scripts": {
     "build": "tsc",
+    "lint": "tsc --noEmit",
     "start": "node dist/code-mode-toon-server.js",
     "dev": "tsc --watch"
   },

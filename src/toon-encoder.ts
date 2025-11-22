@@ -6,7 +6,7 @@ export class TOONEncoder {
    * Encode data to TOON format
    * Example: {users: [{id:1, name:'Alice'}]} -> "users[1]{id,name}:\n1,Alice"
    */
-  static encode(data: any): string {
+  static encode(data: unknown): string {
     if (Array.isArray(data)) {
       return this.encodeArray(data);
     } else if (typeof data === 'object' && data !== null) {
@@ -78,7 +78,7 @@ export class TOONEncoder {
   /**
    * Decode TOON back to JSON
    */
-  static decode(toon: string): any {
+  static decode(toon: string): unknown {
     const lines = toon.split('\n').map(l => l.trim()).filter(l => l);
     if (lines.length === 0) return null;
 
@@ -91,7 +91,7 @@ export class TOONEncoder {
       const fields = fieldsStr.split(',');
       const rows = lines.slice(1).map(line => {
         const values = this.parseCSVLine(line);
-        const obj: any = {};
+        const obj: Record<string, unknown> = {};
         fields.forEach((f, i) => {
           obj[f] = values[i] || null;
         });
@@ -101,7 +101,7 @@ export class TOONEncoder {
     }
 
     // Simple object
-    const result: any = {};
+    const result: Record<string, unknown> = {};
     for (const line of lines) {
       const colonIdx = line.indexOf(':');
       if (colonIdx === -1) continue;
@@ -133,15 +133,26 @@ export class TOONEncoder {
   }
 }
 
+interface JSONSchema {
+  type?: string;
+  required?: string[];
+  properties?: Record<string, {
+    type?: string;
+    description?: string;
+    [key: string]: unknown;
+  }>;
+  [key: string]: unknown;
+}
+
 /**
  * Compress MCP tool schemas using TOON
  */
-export function compressToolSchema(schema: any): string {
+export function compressToolSchema(schema: JSONSchema): string {
   // Convert JSON Schema to TOON format
   const simplified = {
     type: schema.type,
     required: schema.required || [],
-    properties: Object.entries(schema.properties || {}).map(([name, prop]: [string, any]) => ({
+    properties: Object.entries(schema.properties || {}).map(([name, prop]) => ({
       name,
       type: prop.type,
       description: prop.description?.substring(0, 50) || '',
@@ -155,6 +166,6 @@ export function compressToolSchema(schema: any): string {
 /**
  * Compress tool result using TOON
  */
-export function compressToolResult(result: any): string {
+export function compressToolResult(result: unknown): string {
   return TOONEncoder.encode(result);
 }
