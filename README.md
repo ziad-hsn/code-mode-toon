@@ -14,7 +14,7 @@ A lightweight Model Context Protocol (MCP) orchestrator with TOON compression, l
 
 ### One‑Click (Cursor)
 
-[![Add to Cursor](https://img.shields.io/badge/Add_to-Cursor-blue?style=for-the-badge&logo=cursor&logoColor=white)](https://cursor.com/en/install-mcp?name=code-mode-toon&config=eyJ0eXBlIjoic3RkaW8iLCJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImNvZGUtbW9kZS10b29uIl0sImVudiI6eyJDT0RFX01PREVfVE9PTl9DT05GSUciOiJ%2BLy5jdXJzb3IvbWNwLmpzb24ifX0%3D)
+[![Add to Cursor](https://img.shields.io/badge/Add_to-Cursor-blue?style=for-the-badge&logo=cursor&logoColor=white)](https://cursor.com/en-US/install-mcp?name=code-mode-toon&config=eyJ0eXBlIjoic3RkaW8iLCJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImNvZGUtbW9kZS10b29uIl19)
 
 This button loads CodeModeTOON using your existing Cursor MCP configuration at `~/.cursor/mcp.json`. After clicking it, restart Cursor so the new server appears in the MCP panel.
 
