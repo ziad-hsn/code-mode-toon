@@ -5,7 +5,7 @@
   "main": "dist/code-mode-toon-server.js",
   "bin": {
     "code-mode-toon": "./dist/code-mode-toon-server.js"
-  }
+  },
   "scripts": {
     "build": "tsc",
     "lint": "tsc --noEmit",
