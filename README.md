@@ -54,7 +54,7 @@ console.log(result);
 
 ## Security Note
 
-**⚠️ The `vm` module is NOT a security sandbox.** Suitable for personal AI assistant use (Claude, Cursor) with trusted code. Not for multi-tenant or public services. For hardening guidance see [docs/VM_SECURITY_ANALYSIS.md](docs/VM_SECURITY_ANALYSIS.md).
+**⚠️ The `vm` module is NOT a security sandbox.** Suitable for personal AI assistant use (Claude, Cursor) with trusted code. Not for multi-tenant or public services.
 
 ## Acknowledgments
 - Anthropic: [Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp)

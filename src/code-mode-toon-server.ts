@@ -7,6 +7,7 @@ import { TOONEncoder } from "./toon-encoder.js";
 import { readFile } from "fs/promises";
 import * as path from "path";
 import * as os from "os";
+import { TIMEOUTS, LIMITS } from "./constants.js";
 
 interface MCPServer {
   name: string;
@@ -204,7 +205,7 @@ class CodeModeServer {
             }) + "\n");
 
             // Wait briefly for shutdown response (optional, but good practice)
-            await new Promise<void>(resolve => setTimeout(resolve, 500));
+            await new Promise<void>(resolve => setTimeout(resolve, TIMEOUTS.SHUTDOWN_GRACE_MS));
 
             // 2. Send exit notification
             child.stdin.write(JSON.stringify({
@@ -219,7 +220,7 @@ class CodeModeServer {
         // 3. Force kill if still running after a short delay
         setTimeout(() => {
           if (!child.killed) child.kill();
-        }, 1000);
+        }, TIMEOUTS.FORCE_KILL_MS);
       });
 
       await Promise.all(shutdownPromises);
@@ -458,11 +459,14 @@ RETURN VALUE GOTCHAS:
     }
 
     Promise.allSettled(eagerLoadPromises).then((results) => {
-    const duration = Date.now() - startTotal;
+      const duration = Date.now() - startTotal;
       const readyCount = Array.from(this.serverStates.values()).filter((state) => state === "ready").length;
       const failedCount = results.filter((r) => r.status === "rejected").length;
       const totalTools = Array.from(this.mcpServers.values()).reduce((sum, s) => sum + s.tools.length, 0);
       this.log("INFO", `Background load complete after ${duration}ms. Ready: ${readyCount}, Failed: ${failedCount}, Tools: ${totalTools}, Lazy: ${this.lazyServers.size}.`);
+    }).catch((err) => {
+      // This should never happen with allSettled, but add for safety
+      this.log("ERROR", `Unexpected error in background load: ${err}`);
     });
   }
 
@@ -589,9 +593,9 @@ RETURN VALUE GOTCHAS:
 
     return new Promise((resolve, reject) => {
       let buffer = "";
-      
+
       // Split timeouts: short for initial handshake, longer for tools list
-      let timeout = setTimeout(() => reject(new Error(`Timeout during initialize handshake for ${name} after 5s`)), 5000);
+      let timeout = setTimeout(() => reject(new Error(`Timeout during initialize handshake for ${name} after ${TIMEOUTS.HANDSHAKE_TIMEOUT_MS}ms`)), TIMEOUTS.HANDSHAKE_TIMEOUT_MS);
 
       let initialized = false;
       const initId = 1;
@@ -636,10 +640,10 @@ RETURN VALUE GOTCHAS:
                 return;
               }
               initialized = true;
-              
+
               // Extend timeout for tools/list which can be slower (up to 120s)
               clearTimeout(timeout);
-              timeout = setTimeout(() => reject(new Error(`Timeout listing tools for ${name} after 120s`)), 120000);
+              timeout = setTimeout(() => reject(new Error(`Timeout listing tools for ${name} after ${TIMEOUTS.TOOLS_LIST_TIMEOUT_MS}ms`)), TIMEOUTS.TOOLS_LIST_TIMEOUT_MS);
 
               // 3. Send Initialized Notification
               send({
@@ -688,7 +692,7 @@ RETURN VALUE GOTCHAS:
     return new Promise((resolve, reject) => {
       let buffer = "";
       // Increase timeout for slow operations like go_to_definition
-      const timeout = setTimeout(() => reject(new Error(`Tool timeout after 60s: ${toolName}`)), 60000);
+      const timeout = setTimeout(() => reject(new Error(`Tool timeout after ${TIMEOUTS.TOOL_CALL_TIMEOUT_MS}ms: ${toolName}`)), TIMEOUTS.TOOL_CALL_TIMEOUT_MS);
 
       const onData = (data: Buffer) => {
         buffer += data.toString();
@@ -909,6 +913,12 @@ RETURN VALUE GOTCHAS:
 
     const currentState = this.serverStates.get(name);
     if (currentState === "loading") {
+      // Wait for in-flight load instead of throwing error
+      const inFlight = this.loadingServers.get(name);
+      if (inFlight) {
+        this.log("INFO", `Server "${name}" is already loading, waiting for completion...`);
+        return inFlight;
+      }
       throw new Error(`Server "${name}" is still loading. Use get_server_status for details and try again shortly.`);
     }
     if (currentState === "failed") {
@@ -959,6 +969,7 @@ RETURN VALUE GOTCHAS:
       return;
     }
 
+    this.log("INFO", `Hydrating ${targets.length} lazy server(s): ${targets.join(", ")}`);
     await Promise.allSettled(targets.map((name) => this.ensureServerLoaded(name)));
   }
 
@@ -1049,11 +1060,11 @@ RETURN VALUE GOTCHAS:
       };
     }
 
-    if (code.length > 100000) { // 100KB limit
+    if (code.length > LIMITS.CODE_SIZE_BYTES) {
       return {
         content: [{
           type: "text",
-          text: `Error: Code exceeds maximum length of 100KB (received ${code.length} bytes)`
+          text: `Error: Code exceeds maximum length of ${LIMITS.CODE_SIZE_BYTES} bytes (received ${code.length} bytes)`
         }],
         isError: true
       };
@@ -1130,11 +1141,42 @@ RETURN VALUE GOTCHAS:
       }
     };
 
-    const context = vm.createContext(sandbox);
+    // Track timers for cleanup
+    const timers: NodeJS.Timeout[] = [];
+    const intervals: NodeJS.Timeout[] = [];
+
+    // Wrap setTimeout/setInterval to track them
+    (sandbox as any).setTimeout = (callback: (...args: any[]) => void, ms?: number, ...args: any[]) => {
+      const id = setTimeout(callback, ms, ...args);
+      timers.push(id);
+      return id;
+    };
+    (sandbox as any).setInterval = (callback: (...args: any[]) => void, ms?: number, ...args: any[]) => {
+      const id = setInterval(callback, ms, ...args);
+      intervals.push(id);
+      return id;
+    };
+    (sandbox as any).clearTimeout = (id: NodeJS.Timeout) => {
+      const index = timers.indexOf(id);
+      if (index > -1) timers.splice(index, 1);
+      clearTimeout(id);
+    };
+    (sandbox as any).clearInterval = (id: NodeJS.Timeout) => {
+      const index = intervals.indexOf(id);
+      if (index > -1) intervals.splice(index, 1);
+      clearInterval(id);
+    };
+
+    const context = vm.createContext(sandbox, {
+      codeGeneration: {
+        strings: false,  // Prevent eval(), new Function()
+        wasm: false      // Prevent WebAssembly
+      }
+    });
 
     try {
       const wrappedCode = `(async () => { ${code} })()`;
-      const result = await vm.runInContext(wrappedCode, context, { timeout: 60000 });
+      const result = await vm.runInContext(wrappedCode, context, { timeout: TIMEOUTS.CODE_EXECUTION_TIMEOUT_MS });
 
       const executionTime = Date.now() - executionStart;
       const normalizedFormat = returnFormat === "toon" ? "toon" : "json";
@@ -1166,12 +1208,16 @@ RETURN VALUE GOTCHAS:
         }],
         isError: true
       };
+    } finally {
+      // Cleanup timers to prevent memory leaks
+      timers.forEach(clearTimeout);
+      intervals.forEach(clearInterval);
     }
   }
 
   async start() {
     const transport = new StdioServerTransport();
-    
+
     // Prevent infinite loops: Wait for client handshake BEFORE loading downstream servers.
     // If we are a nested instance, the parent will detect our vendor/signature in the
     // initialize response and kill us before we receive the 'initialized' notification.

@@ -17,7 +17,7 @@ export class TOONEncoder {
 
   private static encodeObject(obj: Record<string, any>): string {
     const lines: string[] = [];
-    
+
     for (const [key, value] of Object.entries(obj)) {
       if (Array.isArray(value)) {
         lines.push(this.encodeArrayField(key, value));
@@ -28,50 +28,53 @@ export class TOONEncoder {
         lines.push(`${key}: ${value}`);
       }
     }
-    
+
     return lines.join('\n');
   }
 
   private static encodeArrayField(name: string, arr: any[]): string {
     if (arr.length === 0) return `${name}[0]:`;
-    
+
     // If array of objects with consistent structure
     if (arr.every(item => typeof item === 'object' && item !== null)) {
       const fields = Array.from(new Set(arr.flatMap(Object.keys)));
       const lines = [`${name}[${arr.length}]{${fields.join(',')}}:`];
-      
+
       for (const item of arr) {
         const values = fields.map(f => {
           const v = item[f];
           if (v === undefined || v === null) return '';
-          if (typeof v === 'string' && v.includes(',')) return `"${v}"`;
-          return String(v);
+          const str = String(v);
+          if (str.includes(',') || str.includes('"')) {
+            return `"${str.replace(/"/g, '""')}"`;
+          }
+          return str;
         });
         lines.push(values.join(','));
       }
-      
+
       return lines.join('\n');
     }
-    
+
     // Simple array
     return `${name}[${arr.length}]: ${arr.join(',')}`;
   }
 
   private static encodeArray(arr: any[]): string {
     if (arr.length === 0) return '[]';
-    
+
     if (arr.every(item => typeof item === 'object' && item !== null)) {
       const fields = Array.from(new Set(arr.flatMap(Object.keys)));
       const lines = [`[${arr.length}]{${fields.join(',')}}:`];
-      
+
       for (const item of arr) {
         const values = fields.map(f => String(item[f] ?? ''));
         lines.push(values.join(','));
       }
-      
+
       return lines.join('\n');
     }
-    
+
     return arr.join(',');
   }
 
@@ -83,7 +86,7 @@ export class TOONEncoder {
     if (lines.length === 0) return null;
 
     const firstLine = lines[0];
-    
+
     // Array format: name[N]{field1,field2}:
     const arrayMatch = firstLine.match(/^(\w+)\[(\d+)\]\{([^}]+)\}:$/);
     if (arrayMatch) {
@@ -159,7 +162,7 @@ export function compressToolSchema(schema: JSONSchema): string {
       required: schema.required?.includes(name) ? 'yes' : 'no'
     }))
   };
-  
+
   return TOONEncoder.encode(simplified);
 }
 
