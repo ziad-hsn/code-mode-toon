@@ -106,6 +106,11 @@ export class CodeExecutor {
         const context = vm.createContext(sandbox, {
             codeGeneration: { strings: false, wasm: false }
         });
+        // Limit access to host globals inside the VM
+        Object.defineProperty(context, "globalThis", { value: sandbox, writable: false, configurable: false });
+        Object.defineProperty(context, "global", { value: sandbox, writable: false, configurable: false });
+        (context as any).Function = undefined;
+        (context as any).eval = undefined;
 
         try {
             const wrappedCode = `(async () => { ${code} })()`;

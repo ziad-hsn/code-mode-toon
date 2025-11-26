@@ -4,6 +4,10 @@ import * as os from "os";
 export class PathNormalizer {
     constructor(private projectRoot: string) { }
 
+    setProjectRoot(projectRoot: string) {
+        this.projectRoot = PathNormalizer.expandPath(projectRoot);
+    }
+
     normalizeArguments(args: any): any {
         if (args === undefined || args === null) {
             return args;
@@ -49,6 +53,11 @@ export class PathNormalizer {
         // Handle file:// URIs
         if (p.startsWith('file:///')) {
             p = p.substring(8);
+        }
+        // Preserve UNC/network paths (don't prefix with project root)
+        const isUncPath = p.startsWith('\\\\') || p.startsWith('//');
+        if (isUncPath) {
+            return process.platform === 'win32' ? p.replace(/\//g, '\\') : p;
         }
         // Convert relative paths to absolute
         if (!p.includes(':') && !p.startsWith('/')) {

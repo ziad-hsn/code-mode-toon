@@ -64,6 +64,6 @@ export class ConfigManager {
     }
 
     setProjectRoot(path: string): void {
-        this.codeModeConfig.projectRoot = path;
+        this.codeModeConfig.projectRoot = PathNormalizer.expandPath(path);
     }
 }

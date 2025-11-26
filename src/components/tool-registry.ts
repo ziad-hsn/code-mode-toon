@@ -5,6 +5,7 @@ import { MCPServerManager } from "./mcp-server-manager.js";
 import { CodeExecutor } from "./code-executor.js";
 import { WorkflowManager } from "./workflow-manager.js";
 import { TOONEncoder } from "../toon-encoder.js";
+import { PathNormalizer } from "./path-normalizer.js";
 
 export class ToolRegistry {
     private readonly usageSections: Record<string, { title: string; summary: string; steps?: string[]; tips?: string[] }> = {
@@ -27,9 +28,9 @@ export class ToolRegistry {
             title: "execute_code",
             summary: "Runs TypeScript/JavaScript in a vm sandbox with auto-proxied MCP tools.",
             steps: [
-                "Inputs: { code: string, returnFormat?: \"json\" | \"toon\" }.",
+                "Inputs: { code: string }.",
                 "Sandbox helpers: servers[server].tool(payload), TOON.encode/decode, get_tool_api, search_tools.",
-                "Return payload includes captured logs plus the normalized result in JSON or TOON.",
+                "Return payload includes captured logs plus the normalized result in TOON.",
                 "Guardrails: 100KB code size limit, 60s execution timeout."
             ],
             tips: [
@@ -82,7 +83,8 @@ export class ToolRegistry {
         private configManager: ConfigManager,
         private serverManager: MCPServerManager,
         private codeExecutor: CodeExecutor,
-        private workflowManager: WorkflowManager
+        private workflowManager: WorkflowManager,
+        private pathNormalizer: PathNormalizer
     ) { }
 
     setupHandlers() {
@@ -270,7 +272,9 @@ Considers: operation count, data size, existing workflows.`,
                 } else if (name === "get_tool_api") {
                     return await this.getToolAPI((args as any).serverName);
                 } else if (name === "set_project_root") {
-                    this.configManager.setProjectRoot((args as any).path);
+                    const newRoot = (args as any).path;
+                    this.configManager.setProjectRoot(newRoot);
+                    this.pathNormalizer.setProjectRoot(this.configManager.getProjectRoot());
                     return {
                         content: [{ type: "text", text: `Project root set to: ${this.configManager.getProjectRoot()}` }]
                     };

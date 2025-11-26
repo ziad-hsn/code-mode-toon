@@ -1,4 +1,5 @@
 import { TOONEncoder, compressToolSchema, compressToolResult } from '../toon-encoder.js';
+import { PathNormalizer } from '../components/path-normalizer.js';
 import { strict as assert } from 'assert';
 
 // Test data
@@ -93,6 +94,30 @@ test('String values with commas', () => {
     assert.ok(encoded.includes('"Smith, John"'));
 });
 
+// Test 9b: Numeric-looking strings stay strings
+test('Numeric-looking strings stay strings', () => {
+    const data = { zip: '00123', plain: '42' };
+    const encoded = TOONEncoder.encode(data);
+    const decoded = TOONEncoder.decode(encoded) as any;
+    assert.strictEqual(decoded?.zip, '00123');
+    assert.strictEqual(decoded?.plain, '42');
+});
+
+// Test 9c: Boolean-like strings stay strings
+test('Boolean-like strings stay strings', () => {
+    const data = { flag: 'true', text: 'false' };
+    const decoded = TOONEncoder.decode(TOONEncoder.encode(data)) as any;
+    assert.strictEqual(decoded?.flag, 'true');
+    assert.strictEqual(decoded?.text, 'false');
+});
+
+// Test 9d: Empty strings are preserved
+test('Empty strings are preserved', () => {
+    const data = { empty: '' };
+    const decoded = TOONEncoder.decode(TOONEncoder.encode(data)) as any;
+    assert.strictEqual(decoded?.empty, '');
+});
+
 // Test 9: Null and undefined handling
 test('Null and undefined handling', () => {
     const data = [{ a: null, b: undefined, c: 'value' }];
@@ -137,6 +162,69 @@ test('Large dataset encoding', () => {
     const toonSize = encoded.length;
     assert.ok(toonSize < jsonSize);
     console.log(`   Large dataset: JSON=${jsonSize} bytes, TOON=${toonSize} bytes, Savings=${((1 - toonSize / jsonSize) * 100).toFixed(1)}%`);
+});
+
+// Test 13: Top-level array round-trip
+test('Top-level array round-trip', () => {
+    const encoded = TOONEncoder.encode(testData.arrayOfObjects);
+    const decoded = TOONEncoder.decode(encoded);
+    assert.deepStrictEqual(decoded, testData.arrayOfObjects);
+});
+
+// Test 14: Nested object round-trip
+test('Nested object round-trip', () => {
+    const encoded = TOONEncoder.encode(testData.nestedObject);
+    const decoded = TOONEncoder.decode(encoded);
+    assert.deepStrictEqual(decoded, testData.nestedObject);
+});
+
+// Test 15: Unflatten nested array objects
+test('Nested array unflatten', () => {
+    const data = {
+        users: [
+            { id: 1, profile: { role: 'dev', active: true } },
+            { id: 2, profile: { role: 'qa', active: false } }
+        ]
+    };
+    const encoded = TOONEncoder.encode(data);
+    const decoded = TOONEncoder.decode(encoded);
+    assert.deepStrictEqual(decoded, data);
+});
+
+// Test 16: Primitive array round-trip
+test('Primitive array round-trip', () => {
+    const array = [1, 2, 3];
+    const decoded = TOONEncoder.decode(TOONEncoder.encode(array));
+    assert.deepStrictEqual(decoded, array);
+});
+
+// Test 17b: Numbers remain numbers
+test('Numbers remain numbers', () => {
+    const data = { count: 7, nested: { total: 15 } };
+    const decoded = TOONEncoder.decode(TOONEncoder.encode(data)) as any;
+    assert.strictEqual(decoded?.count, 7);
+    assert.strictEqual(decoded?.nested?.total, 15);
+});
+
+// Test 17: PathNormalizer updates project root
+test('PathNormalizer updates project root', () => {
+    const normalizer = new PathNormalizer('/old/root');
+    const first = normalizer.normalizePath('src/index.ts');
+    normalizer.setProjectRoot('/new/root');
+    const second = normalizer.normalizePath('src/index.ts');
+    const normalizedFirst = first.replace(/\\\\/g, '/').replace(/\\/g, '/');
+    const normalizedSecond = second.replace(/\\\\/g, '/').replace(/\\/g, '/');
+    assert.ok(normalizedFirst.includes('/old/root'));
+    assert.ok(normalizedSecond.includes('/new/root'));
+    assert.notStrictEqual(normalizedFirst, normalizedSecond);
+});
+
+// Test 18: UNC paths are preserved (not prefixed with project root)
+test('UNC paths are preserved', () => {
+    const normalizer = new PathNormalizer('/root');
+    const unc = '\\\\server\\share\\file.txt';
+    const normalized = normalizer.normalizePath(unc);
+    assert.strictEqual(normalized, process.platform === 'win32' ? unc : unc);
 });
 
 console.log(`\nTest Results: ${passed} passed, ${failed} failed`);

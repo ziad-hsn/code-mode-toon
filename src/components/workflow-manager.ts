@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { WorkflowDefinition, WorkflowContext } from '../workflow-types.js';
 import { ConfigManager } from './config-manager.js';
 import { MCPServerManager } from './mcp-server-manager.js';
@@ -19,12 +20,21 @@ export class WorkflowManager {
         // Check for WORKFLOWS_DIR env variable, default to .workflows
         const workflowDirName = process.env.WORKFLOWS_DIR || '.workflows';
         const projectRoot = this.configManager.getProjectRoot();
-        const workflowDir = path.join(projectRoot, 'dist', workflowDirName);
+        const primaryDir = path.join(projectRoot, 'dist', workflowDirName);
+        const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+        const packageDir = path.join(moduleDir, '..', workflowDirName);
 
-        if (!fs.existsSync(workflowDir)) {
-            console.error(`[CodeMode+TOON] Workflow directory not found at ${workflowDir}. Skipping workflow loading.`);
+        const candidates = [primaryDir, packageDir].filter((dir, idx, arr) => arr.indexOf(dir) === idx);
+        const workflowDir = candidates.find(dir => fs.existsSync(dir));
+
+        if (!workflowDir) {
+            console.error(`[CodeMode+TOON] Workflow directory not found at ${primaryDir} or ${packageDir}. Skipping workflow loading.`);
             console.error(`[CodeMode+TOON] Set WORKFLOWS_DIR environment variable to customize the workflows directory name.`);
             return;
+        }
+
+        if (workflowDir === packageDir && !fs.existsSync(primaryDir)) {
+            console.error(`[CodeMode+TOON] Using packaged workflows at ${workflowDir} (no project-level workflows found).`);
         }
 
         const files = fs.readdirSync(workflowDir)
