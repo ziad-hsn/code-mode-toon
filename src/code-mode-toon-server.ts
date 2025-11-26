@@ -38,7 +38,7 @@ class CodeModeServer {
     this.serverManager = new MCPServerManager(this.configManager, this.pathNormalizer);
     this.codeExecutor = new CodeExecutor(this.serverManager, this.pathNormalizer);
     this.workflowManager = new WorkflowManager(this.configManager, this.serverManager, this.pathNormalizer);
-    this.toolRegistry = new ToolRegistry(this.server, this.configManager, this.serverManager, this.codeExecutor, this.workflowManager);
+    this.toolRegistry = new ToolRegistry(this.server, this.configManager, this.serverManager, this.codeExecutor, this.workflowManager, this.pathNormalizer);
   }
 
   static async create(configPath: string): Promise<CodeModeServer> {
@@ -57,7 +57,7 @@ class CodeModeServer {
     instance.serverManager = new MCPServerManager(instance.configManager, instance.pathNormalizer);
     instance.codeExecutor = new CodeExecutor(instance.serverManager, instance.pathNormalizer);
     instance.workflowManager = new WorkflowManager(instance.configManager, instance.serverManager, instance.pathNormalizer);
-    instance.toolRegistry = new ToolRegistry(instance.server, instance.configManager, instance.serverManager, instance.codeExecutor, instance.workflowManager);
+    instance.toolRegistry = new ToolRegistry(instance.server, instance.configManager, instance.serverManager, instance.codeExecutor, instance.workflowManager, instance.pathNormalizer);
 
     await instance.workflowManager.loadWorkflows();
     instance.toolRegistry.setupHandlers();

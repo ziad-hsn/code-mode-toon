@@ -18,6 +18,7 @@ export class MCPServerManager {
     private serverStates: Map<string, 'loading' | 'ready' | 'failed'> = new Map();
     private loadingServers: Map<string, Promise<LoadedMCPServer>> = new Map();
     private childProcesses: Set<ChildProcess> = new Set();
+    private failureCounts: Map<string, number> = new Map();
 
     constructor(
         private configManager: ConfigManager,
@@ -48,10 +49,12 @@ export class MCPServerManager {
                 .then((loaded) => {
                     this.mcpServers.set(name, loaded);
                     this.serverStates.set(name, "ready");
+                    this.failureCounts.delete(name);
                     console.error(`[CodeMode+TOON] Loaded ${name} (${loaded.tools.length} tools)`);
                 })
                 .catch((err: any) => {
                     this.serverStates.set(name, "failed");
+                    this.failureCounts.set(name, (this.failureCounts.get(name) || 0) + 1);
                     const message = err instanceof Error ? err.message : String(err);
                     console.error(`[CodeMode+TOON] Failed to load ${name}: ${message}`);
                     throw err;
@@ -83,7 +86,12 @@ export class MCPServerManager {
             throw new Error(`Server "${name}" is still loading.`);
         }
         if (currentState === "failed") {
-            throw new Error(`Server "${name}" failed to load earlier.`);
+            const failures = this.failureCounts.get(name) || 0;
+            if (failures >= 3) {
+                throw new Error(`Server "${name}" failed to load earlier (attempts: ${failures}).`);
+            }
+            // allow retry after failure by clearing state
+            this.serverStates.delete(name);
         }
 
         const config = this.configManager.getMCPServers()[name];
@@ -101,11 +109,13 @@ export class MCPServerManager {
                 this.mcpServers.set(name, loaded);
                 this.lazyServers.delete(name);
                 this.serverStates.set(name, "ready");
+                this.failureCounts.delete(name);
                 console.error(`[CodeMode+TOON] loaded ${name} on-demand (${loaded.tools.length} tools)`);
                 return loaded;
             })
             .catch((err) => {
                 this.serverStates.set(name, "failed");
+                this.failureCounts.set(name, (this.failureCounts.get(name) || 0) + 1);
                 const message = err instanceof Error ? err.message : String(err);
                 console.error(`[CodeMode+TOON] failed to load ${name} on-demand: ${message}`);
                 throw err;
