@@ -5,7 +5,7 @@
 - [Quick Start](#quick-start)
 - [Available Workflows](#available-workflows)
   - [Research](#research-workflow)
-  - [Chaos Monkey](#chaos-monkey-workflow)
+
   - [K8s Detective](#k8s-detective-workflow)
   - [Post-Mortem](#post-mortem-workflow)
 - [🤖 AI Assistant Prompts](#-ai-assistant-prompts)
@@ -42,6 +42,8 @@ graph LR
 const result = await workflows.research({
   goal: "Compare xsync vs sync.Map performance in Go",
   queries: ["xsync vs sync.Map benchmarks", "xsync memory usage"],
+  libraryIDs: ["puzpuzpuz/xsync"],
+  wikipediaTopics: ["Hash table", "Synchronization (computer science)"],
   synthesize: true
 });
 
@@ -52,7 +54,7 @@ console.log(result.synthesis);
 
 ### Research Workflow
 **Name**: `research`  
-**Purpose**: Gather and synthesize technical information from multiple sources (Context7, Wikipedia, Perplexity).
+**Purpose**: Comprehensive multi-source research aggregator (Context7, Wikipedia, Perplexity) with parallel execution and synthesis.
 
 #### Parameters
 | Parameter | Type | Required | Description |
@@ -63,40 +65,141 @@ console.log(result.synthesis);
 | `queries` | `string[]` | No | Perplexity questions (e.g., `["React vs Vue performance"]`) |
 | `synthesize` | `boolean` | No | If `true`, uses LLM to summarize findings. Default: `false` |
 | `outputFile` | `string` | No | Path to save TOON result (e.g., `/tmp/research.toon`) |
+| `batchSize` | `number` | No | Max parallel requests per source. Default: `5` |
 
 #### Usage Example
 ```javascript
 const result = await workflows.research({
-  goal: "Understand Raft consensus",
-  wikipediaTopics: ["Raft (algorithm)"],
-  queries: ["Raft leader election timeout best practices"],
-  synthesize: true
+  goal: "Understand CodeModeTOON MCP orchestrator - what it is, how it works, key features like TOON compression, lazy-loading, and when to use it for AI coding assistants",
+  queries: [
+    "What is Model Context Protocol (MCP) and how does it work with AI assistants?",
+    "What are MCP servers and how do they extend AI assistant capabilities?",
+    "What is TOON compression format for AI data efficiency?"
+  ],
+  wikipediaTopics: [
+    "Model Context Protocol"
+  ],
+  synthesize: false
 });
 ```
+
+#### Sample Output
+<details>
+<summary>Click to view Research Workflow output</summary>
+
+```
+I'll use the research workflow to gather information about CodeModeTOON and then explain it to you. Let me first check the available workflows and then execute the research.
+
+[2 tools called]
+
+Now let me execute the research workflow to gather comprehensive information:
+
+[3 tools called]
+
+Let me also check what servers are available and get more details on the execute_code feature:
+
+[2 tools called]
+
+Excellent! Now I have all the research I need. Let me explain **CodeModeTOON** to you:
 
 ---
 
-### Chaos Monkey Workflow
-**Name**: `chaos-monkey`  
-**Purpose**: Test system resilience by randomly stopping Docker containers.
+# 🚀 CodeModeTOON: Your AI Power-Up for Development
 
-#### Parameters
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `outputFile` | `string` | Yes | Path to save the report (e.g., `/tmp/chaos_report.md`) |
-| `dryRun` | `boolean` | No | If `true`, only simulates the attack. Default: `false` |
-| `exclude` | `string[]` | No | Containers to ignore (e.g., `["database"]`) |
+## What Is It?
 
-#### Usage Example
-```javascript
-// Run a dry run first
-const report = await workflows['chaos-monkey']({
-  outputFile: "/tmp/chaos_test.md",
-  dryRun: true,
-  exclude: ["production-db"]
-});
-console.log(report);
+**CodeModeTOON** is an **MCP orchestrator** — think of it as a smart "traffic controller" that sits between your AI assistant (like me, Claude) and multiple specialized tools/servers. It makes your AI coding assistant significantly more powerful by:
+
+1. **Connecting to multiple MCP servers** (databases, APIs, development tools)
+2. **Automatically compressing data** to save tokens and costs
+3. **Lazy-loading servers** on demand (no startup overhead)
+4. **Normalizing file paths** across Windows/Mac/Linux
+
+---
+
+## 🔑 Key Concepts
+
+### What is MCP (Model Context Protocol)?
+MCP is an **open standard** created by Anthropic that lets AI assistants securely connect to external tools and data sources. Instead of being limited to pre-trained knowledge, MCP enables AI to:
+- Access real-time data (databases, APIs, file systems)
+- Execute actions (run commands, modify files, query services)
+- Use specialized tools (Kubernetes auditing, code analysis, web search)
+
+### What Does CodeModeTOON Add?
+
+| Feature | What It Does |
+|---------|--------------|
+| **TOON Compression** | Reduces structured JSON data by 30-90%, saving tokens/costs |
+| **Lazy Loading** | Servers only start when you actually need them |
+| **Unified Interface** | One consistent way to call any MCP tool |
+| **Pre-Built Workflows** | Automated pipelines for common tasks |
+
+---
+
+## 🛠️ Available Tools
+
+### Currently Loaded Servers:
+- `go-development` — Go language tooling
+- `workspace-lsp` — Language Server Protocol features
+- `sequential-thinking` — Step-by-step reasoning
+- `perplexity` — Web search and Q&A
+
+### Available On-Demand (Lazy):
+- `context7` — Library documentation lookup
+- `structured-thinking` — Complex problem analysis
+
+---
+
+## 📋 Built-In Workflows
+
+These are **pre-built automations** you can run with one command:
+
+| Workflow | Purpose |
+|----------|---------|
+| **research** | Multi-source research from Perplexity, Wikipedia, library docs |
+| **k8s-detective** | Kubernetes cluster security and health auditing |
+| **post-mortem** | Log analysis with pattern clustering and anomaly detection |
+| **chaos-monkey** | System resilience testing via Docker container disruption |
+
+---
+
+## 🎯 When to Use What
+
+| Scenario | Use This |
+|----------|----------|
+| Quick tool call | Direct MCP call |
+| 3+ related operations | `execute_code` (batching) |
+| Research, auditing, log analysis | `execute_workflow` |
+| Finding tools | `search_tools` |
+| Learning a server's API | `get_tool_api` |
+
+---
+
+## 🚦 Quick Start Steps
+
+1. **`list_servers`** — See what's available
+2. **`list_workflows`** — Discover automations
+3. **`search_tools`** — Find specific capabilities
+4. **`get_tool_api`** — Inspect tool parameters
+5. **`execute_workflow`** or **`execute_code`** — Run your task
+
+---
+
+## 💡 Example: What Just Happened
+
+When you asked me to research this tool, I used the **research workflow** which:
+1. Queried Perplexity for MCP documentation
+2. Ran multiple queries in parallel
+3. Aggregated results automatically
+4. Returned compressed, structured data
+
+All of this happened through CodeModeTOON orchestrating the downstream MCP servers!
+
+---
+
+**In short:** CodeModeTOON turns your AI assistant from a "smart text generator" into a **capable agent** that can research, analyze, audit, and automate real development tasks. 🎉
 ```
+</details>
 
 ---
 
@@ -120,44 +223,167 @@ console.log(report);
 ```
 
 #### Sample Output
-```markdown
-## Cluster audit review
+<details>
+<summary>Click to view K8s Detective Workflow output</summary>
 
-### Overall status
-- 10 pods across 2 namespaces
-- 2 deployments (my-app, coredns)
-- All pods are currently Running, but many have high restart counts
-
-### Critical findings
-1. **Stability**: High restart counts on kube-system pods (storage-provisioner: 31 restarts)
-2. **Security**: Privileged container found in kube-proxy (expected)
-3. **Efficiency**: 8 pods missing resource limits
-
-### Recommendations
-1. Add resource limits to all pods
-2. Investigate storage-provisioner restarts
 ```
+Re-running the k8s-detective workflow:
+
+
+[1 tool called]
+
+
+K8s Detective workflow completed. Audit report:
+
+## Cluster overview
+- **Pods:** 10
+- **Deployments:** 2
+- **Services:** 2
+- **Events Analyzed:** 55
+
+## Issue summary by severity
+- **Critical:** 1
+- **High:** 5
+- **Medium:** 28
+- **Low:** 5
+- **Total Issues:** 39
+
+## Critical issues
+1. **SECURITY:** `kube-proxy-xv658/kube-proxy` — Container runs privileged (full host access)
+
+## High severity issues
+5 security issues — all kube-system pods using host network:
+- `etcd-docker-desktop`
+- `kube-apiserver-docker-desktop`
+- `kube-controller-manager-docker-desktop`
+- `kube-proxy-xv658`
+- `kube-scheduler-docker-desktop`
+
+## Medium severity issues (28)
+- Security: `allowPrivilegeEscalation` not disabled (9 pods)
+- Security: Using `:latest` or untagged image (nginx)
+- Efficiency: No resource limits (8 pods)
+- Stability: High restart counts:
+  - `storage-provisioner`: 33 restarts
+  - `kube-scheduler`: 23 restarts
+  - `kube-controller-manager`: 20 restarts
+  - CoreDNS pods: 15 restarts each
+- Stability: CoreDNS pods showing "Unhealthy" warnings (4x each)
+
+## Low severity issues (5)
+- Efficiency: Missing resource requests (4 pods)
+- Config: Single replica deployment (no HA)
+
+## Notable changes from previous run
+- Restart counts increased slightly (e.g., storage-provisioner: 31 → 33)
+- Added event analysis (55 events)
+- Better categorization with severity levels
+- Identified CoreDNS "Unhealthy" warnings
+
+The report has been saved to the output file.
+```
+</details>
 
 ---
 
 ### Post-Mortem Workflow
 **Name**: `post-mortem`  
-**Purpose**: Analyze log files to generate an automated incident report.
+**Purpose**: Intelligent log analysis with streaming processing, pattern clustering, and anomaly detection.
 
 #### Parameters
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `logFile` | `string` | Yes | Path to log file (e.g., `/var/log/app.log`) |
-| `outputFile` | `string` | Yes | Path to save report |
+| `outputFile` | `string` | Yes | Path to save TOON-compressed analysis |
+| `maxExamples` | `number` | No | Max examples per cluster. Default: `5` |
+| `includePatterns` | `boolean` | No | Include normal patterns in output. Default: `true` |
 
-#### Usage Example
-```javascript
-const report = await workflows['post-mortem']({
-  logFile: "/var/log/nginx/error.log",
-  outputFile: "/tmp/incident_report.md"
-});
-console.log(report);
+#### Sample Output
+<details>
+<summary>Click to view Post-Mortem Workflow output</summary>
+
 ```
+Running the post-mortem workflow on `warning_alerts.log`:
+
+
+[1 tool called]
+
+
+Post-mortem workflow completed. Analysis of `warning_alerts.log`:
+
+## Analysis results
+
+**Statistics:**
+- **Total Lines:** 899
+- **Unique Patterns:** 1
+- **Time Span:** ~5 seconds (15:43:20 - 15:43:25)
+- **Peak Activity:** 899 events in 1 minute
+
+### Issue breakdown
+- **Critical:** 0
+- **Errors:** 0
+- **Warnings:** 899
+
+## Critical findings
+
+### Warning alert storm — same monitor
+- **Monitor:** Ping Monitor 00100 (port 57426)
+- **Status:** DEGRADED (not FAILED)
+- **Severity:** WARNING
+- **Color:** yellow
+- **Job ID:** `001d1946-74ab-4c3d-8d2b-4cf5eb736598` (same for all 899 alerts)
+- **Time Window:** 5.2 seconds
+- **Alert Rate:** ~173 alerts/second
+
+### Alert details
+All 899 warnings contain:
+- **Summary:** "Service health checks are failing consecutively beyond safe thresholds"
+- **Action:** "Investigate partial outage or performance regression"
+- **Next Steps:** "Validate dependencies, review recent changes, and monitor closely"
+
+## Comparison with critical alerts
+
+| Metric | Critical Alerts | Warning Alerts |
+|--------|----------------|----------------|
+| Count | 900 | 899 |
+| Status | FAILED | DEGRADED |
+| Severity | CRITICAL | WARNING |
+| Time Span | 14 seconds | 5 seconds |
+| Job ID | `cb2b2ca6-...` | `001d1946-...` |
+| Alert Rate | ~64/sec | ~173/sec |
+
+## Root cause analysis
+
+### Observations
+1. Same monitor, different severity: warnings likely preceded critical alerts.
+2. Higher alert rate: warnings generated faster than criticals.
+3. Same pattern: alert flooding without deduplication.
+4. Escalation path: DEGRADED → FAILED suggests a progression.
+
+### Timeline hypothesis
+- 15:43:20-15:43:25: Warning alerts (DEGRADED)
+- 09:22:08-09:22:22: Critical alerts (FAILED) — likely later escalation
+
+## Recommendations
+
+1. Immediate:
+   - Check if port 57426 service is degraded or down
+   - Review service health metrics
+
+2. Alerting improvements:
+   - Implement alert deduplication (same job_id + status = single alert)
+   - Add rate limiting (max alerts per time window)
+   - Implement alert state machine (WARNING → CRITICAL with suppression)
+   - Add correlation between warning and critical alerts
+
+3. Monitoring optimization:
+   - Reduce check frequency during degraded states
+   - Implement progressive alerting (fewer alerts as severity increases)
+   - Add alert grouping by monitor + status
+
+The workflow categorized this as a performance issue and identified the alert flooding pattern. The report was saved to the output file.
+```
+</details>
 
 ## 🤖 AI Assistant Prompts
 

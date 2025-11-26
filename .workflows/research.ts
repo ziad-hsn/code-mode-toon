@@ -16,6 +16,7 @@ import * as path from 'path';
  *   params: { 
  *     goal: 'Analyze xsync vs sync.Map performance',
  *     libraryIDs: ['puzpuzpuz/xsync'],
+ *     wikipediaTopics: ['Hash table'],
  *     queries: ['xsync vs sync.Map benchmarks']
  *   } 
  * })
@@ -291,7 +292,7 @@ export const workflow: WorkflowDefinition = {
 USAGE: Orchestrates data fetching from Context7 (library docs), Wikipedia (concepts),
 and Perplexity (web Q&A). Supports parallel execution, retry logic, rate limiting,
 optional LLM synthesis, and file output.
-EXAMPLE: "Research xsync library performance vs sync.Map with benchmarks and theory"
+EXAMPLE: "Research xsync library performance vs sync.Map with benchmarks and theory. libraryIDs: ['puzpuzpuz/xsync'], wikipediaTopics: ['Hash table']"
 PARAMETERS:
 - goal: Primary research objective (required)
 - libraryIDs: Context7 library IDs for docs ["puzpuzpuz/xsync"] (optional)

@@ -1,14 +1,14 @@
 # CodeModeTOON MCP Server
 
-![CI Status](https://github.com/ziad-hsn/code-mode-toon/actions/workflows/ci.yml/badge.svg)
+![CI Status](https://github.com/ziad-hsn/code-mode-toon/workflows/CI/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![NPM Version](https://img.shields.io/npm/v/code-mode-toon.svg)
 
-A lightweight **Model Context Protocol (MCP)** orchestrator designed for **efficiency at scale**. It features **TOON compression** (reducing token usage by 30-70%) and **Lazy Loading**, making it the ideal solution for complex, multi-tool agentic workflows.
+A lightweight **Model Context Protocol (MCP)** orchestrator designed for **efficiency at scale**. It features **TOON compression** (reducing token usage by 30-90%) and **Lazy Loading**, making it the ideal solution for complex, multi-tool agentic workflows.
 
 ## The "Context Trap" in Agentic Workflows
 
-Recent research from **Anthropic** and **Cloudflare** highlights a critical bottleneck: **AI agents struggle with complex, multi-step workflows because they lack state.**
+Recent articles from **Anthropic** and **Cloudflare** (see [Here](#acknowledgments)) highlights a critical bottleneck: **AI agents struggle with complex, multi-step workflows because they lack state.**
 
 While **Code Execution** (e.g., TypeScript) allows agents to maintain state and structure workflows effectively, it introduces a new problem: **Data Bloat**. Real-world operations (like SRE log analysis or database dumps) generate massive JSON payloads that explode the context window, making stateful execution prohibitively expensive.
 
@@ -38,7 +38,7 @@ graph LR
 
 #### 🗜️ TOON Compression
 Reduces token usage by **30-90%** for structured data.
-- **Validated**: 92% savings on Kubernetes audits
+- **Validated**: ~83% savings on Kubernetes audits
 - **Best for**: SRE logs, database dumps, API responses
 - **How it works**: Schema extraction + value compression
 
@@ -51,6 +51,12 @@ Servers only start when needed. Zero overhead for unused tools.
 Secure JS execution with auto-proxied MCP tool access.
 - **Best for**: Complex stateful workflows, batch operations
 - **Security**: Uses Node.js `vm` module (not for multi-tenant use)
+
+#### 🤖 Agent-Friendly Features
+Designed for programmatic discovery and self-correction.
+- **`suggest_approach`**: Meta-tool that recommends the best execution strategy (code vs workflow vs direct call).
+- **Efficiency Metrics**: `execute_code` returns operation counts and compression savings to reinforce efficient behavior.
+- **Recovery Hints**: Error messages include actionable next steps for agents (e.g., "Server not found? Try list_servers").
 
 ## Table of Contents
 - [The Context Trap](#the-context-trap-in-agentic-workflows)
@@ -106,6 +112,20 @@ Add this to your `~/.cursor/mcp.json`:
 ```
 
 
+## 🧠 Claude Skills
+CodeModeTOON includes a pre-built **Claude Skill** to make your AI assistant an expert at using this orchestrator.
+
+### `code-mode-toon-workflow-expert`
+A specialized skill that teaches Claude how to:
+- **Decide** when to use a workflow vs ad-hoc code.
+- **Create** new workflows following best practices.
+- **Orchestrate** multiple tools efficiently.
+
+**Installation**:
+1. Unzip `claude-skills/code-mode-toon-workflow-expert.skill`
+2. Place the folder in your `.claude/skills/` directory (or import via Claude desktop app).
+
+## 🤖 AI Assistant Prompts
 
 ## Quick Start
 
@@ -126,7 +146,8 @@ console.log(result); // See compression in action! ~40% token savings
 
 ## Usage Examples
 
-**1. Optimized Tool Execution with TOON Compression**
+<details>
+<summary><strong>1. Optimized Tool Execution with TOON Compression</strong></summary>
 
 ```javascript
 // Inside execute_code
@@ -139,8 +160,10 @@ const result = await servers['perplexity'].perplexity_ask({
 
 console.log(result); // Returns TOON-encoded string, saving ~40% tokens
 ```
+</details>
 
-**2. Multi-Server Coordination**
+<details>
+<summary><strong>2. Multi-Server Coordination</strong></summary>
 
 ```javascript
 // Fetch large documentation from Context7
@@ -151,8 +174,10 @@ const docs = await servers['context7']['get-library-docs']({
 
 console.log(TOON.encode(docs)); // Massive compression on structured data
 ```
+</details>
 
-**3. Workflow Orchestration**
+<details>
+<summary><strong>3. Workflow Orchestration</strong></summary>
 
 ```javascript
 // Run a complex research workflow
@@ -165,6 +190,7 @@ const result = await workflows.research({
 
 console.log(result.synthesis); // LLM-synthesized findings
 ```
+</details>
 
 ## Workflows
 
@@ -177,7 +203,7 @@ A powerful research assistant that:
 - **Outputs TOON-encoded files** for maximum context efficiency.
 - **Retries** failed requests automatically.
 
-See [.workflows/WORKFLOWS.md](.workflows/WORKFLOWS.md) for detailed documentation, usage examples, and AI prompts.
+See [.workflows/README.md](.workflows/README.md) for detailed documentation, usage examples, and AI prompts.
 
 ## Performance Benchmark
 
@@ -187,8 +213,8 @@ See [.workflows/WORKFLOWS.md](.workflows/WORKFLOWS.md) for detailed documentatio
 
 | Metric | Original | TOON | Savings |
 |--------|----------|------|---------|
-| Characters | 37,263 | 2,824 | 92.42% |
-| Estimated Tokens* | ~9,315 | ~706 | 8,609 tokens |
+| Characters | 37,263 | 2,824 | ~83% |
+| Estimated Tokens* | ~9,315 | ~706 | ~8,600 tokens |
 | Cost (Claude Sonnet)** | $0.028 | $0.002 | $0.026 |
 
 \**Assuming 4 chars/token average*  
@@ -196,7 +222,8 @@ See [.workflows/WORKFLOWS.md](.workflows/WORKFLOWS.md) for detailed documentatio
 
 **Key Insight**: For infrastructure audits, log analysis, or database dumps, TOON compression can reduce token costs by 90%+, making complex agentic workflows feasible within budget.
 
-### Detailed Scenarios
+<details>
+<summary><strong>Detailed Scenarios</strong></summary>
 
 **Scenario 1: Natural Language Query (History of Rome)**
 *Unstructured text compresses poorly, as expected.*
@@ -208,7 +235,8 @@ See [.workflows/WORKFLOWS.md](.workflows/WORKFLOWS.md) for detailed documentatio
 *Highly structured, repetitive JSON (infrastructure dumps) compresses extremely well.*
 - **Original JSON**: 37,263 chars
 - **TOON Encoded**: 2,824 chars
-- **Compression Ratio**: **92.42% Savings** 📉
+- **Compression Ratio**: **~83% Savings** 📉
+</details>
 
 ## Troubleshooting
 
@@ -240,12 +268,12 @@ Built by **Ziad Hassan** (Senior SRE/DevOps) — [LinkedIn](https://www.linkedin
 
 ## Contributing
 
-We welcome contributions! 🙌
+Contributions are welcome! 🙌
 
 ### Ways to Contribute
 1. **Report bugs** - Open an issue with reproduction steps
 2. **Suggest features** - Discuss use cases in Issues
-3. **Add workflows** - See [WORKFLOW_DESIGN.md](WORKFLOW_DESIGN.md)
+3. **Add workflows** - See [Workflows](.workflows/README.md)
 4. **Improve docs** - Documentation PRs always welcome
 
 ### Development Setup
