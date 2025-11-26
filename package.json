@@ -1,6 +1,6 @@
 {
   "name": "code-mode-toon",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Lightweight MCP orchestrator with TOON compression (30-90% token savings) and lazy loading for efficient AI agent workflows",
   "type": "module",
   "main": "dist/code-mode-toon-server.js",
