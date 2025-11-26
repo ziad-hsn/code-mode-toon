@@ -59,10 +59,11 @@ export class WorkflowManager {
         return this.workflows.get(name);
     }
 
-    listWorkflows(): Array<{ name: string; description: string }> {
+    listWorkflows(): Array<{ name: string; description: string; parameters: any }> {
         return Array.from(this.workflows.values()).map(w => ({
             name: w.name,
-            description: w.description
+            description: w.description,
+            parameters: w.parameters
         }));
     }
 

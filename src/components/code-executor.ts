@@ -28,6 +28,7 @@ export class CodeExecutor {
 
         const logs: string[] = [];
         const executionStart = Date.now();
+        let operationCount = 0;
 
         const serverNames = new Set<string>([
             ...this.serverManager.getLoadedServers().keys(),
@@ -41,6 +42,7 @@ export class CodeExecutor {
                 get: (_target, prop) => {
                     if (prop === "then" || typeof prop !== "string") return undefined;
                     return async (rawArgs: any) => {
+                        operationCount++;
                         const server = await this.serverManager.ensureServerLoaded(name);
                         const tool = server.tools.find((t) => t.name === prop);
                         if (!tool) throw new Error(`Tool "${prop}" not found on server "${name}"`);
@@ -112,12 +114,24 @@ export class CodeExecutor {
             const executionTime = Date.now() - executionStart;
             const normalizedResult = this.pathNormalizer.normalizePathsInResult(result);
             const safeResult = normalizedResult === undefined ? null : normalizedResult;
+
+            const originalSize = JSON.stringify(safeResult).length;
             const formattedResult = TOONEncoder.encode(safeResult);
+            const compressedSize = formattedResult.length;
+            const savings = originalSize > 0 ? ((1 - compressedSize / originalSize) * 100).toFixed(1) : "0.0";
 
             const sections: string[] = [];
             if (logs.length) sections.push(`Logs:\n${logs.join("\n")}`);
             sections.push(`Result (TOON):\n${formattedResult}`);
-            sections.push(`[Execution: ${executionTime}ms]`);
+
+            sections.push(`---
+EFFICIENCY REPORT:
+• Operations: ${operationCount}
+• Original: ${originalSize} bytes
+• Compressed: ${compressedSize} bytes
+• Savings: ${savings}%
+• Time: ${executionTime}ms
+${Number(savings) < 20 ? '\nNOTE: Low compression suggests unstructured data. TOON works best on JSON/structured data.' : ''}`);
 
             return {
                 content: [{ type: "text", text: sections.join("\n\n") }]

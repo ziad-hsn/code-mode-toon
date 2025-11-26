@@ -84,7 +84,16 @@ export class TOONEncoder {
       const lines = [`[${arr.length}]{${fields.join(',')}}:`];
 
       for (const item of arr) {
-        const values = fields.map(f => String(item[f] ?? ''));
+        const values = fields.map(f => {
+          const v = item[f];
+          if (v === undefined || v === null) return '';
+          const str = String(v);
+          // Quote values containing comma, double-quote, or newline
+          if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+            return `"${str.replace(/"/g, '""')}"`;
+          }
+          return str;
+        });
         lines.push(values.join(','));
       }
 

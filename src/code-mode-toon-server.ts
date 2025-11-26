@@ -31,7 +31,6 @@ class CodeModeServer {
       },
       { capabilities: { tools: {} } }
     );
-    console.error(this.server);
 
     this.configManager = new ConfigManager(configPath);
     this.pathNormalizer = new PathNormalizer(this.configManager.getProjectRoot());
