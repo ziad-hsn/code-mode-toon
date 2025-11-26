@@ -1,310 +1,650 @@
 import type { WorkflowDefinition } from '../src/workflow-types.js';
-import { z } from 'zod';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 
-// Helper: Retry with exponential backoff
-async function retryWithBackoff<T>(
+/**
+ * WORKFLOW: research
+ * 
+ * Comprehensive multi-source research aggregator that orchestrates
+ * parallel data fetching from Context7, Wikipedia, and Perplexity.
+ * Features parallel execution, retry logic, rate limiting, synthesis,
+ * and graceful degradation across MCP servers.
+ * 
+ * @example
+ * execute_workflow({ 
+ *   name: 'research', 
+ *   params: { 
+ *     goal: 'Analyze xsync vs sync.Map performance',
+ *     libraryIDs: ['puzpuzpuz/xsync'],
+ *     queries: ['xsync vs sync.Map benchmarks']
+ *   } 
+ * })
+ */
+
+// ============================================
+// TYPES
+// ============================================
+
+interface ResearchResult {
+    source: 'context7' | 'wikipedia' | 'perplexity' | 'brave-search';
+    identifier: string;
+    data: unknown;
+    error: null;
+    durationMs: number;
+}
+
+interface ResearchError {
+    source: 'context7' | 'wikipedia' | 'perplexity' | 'brave-search';
+    identifier: string;
+    data: null;
+    error: string;
+    durationMs: number;
+}
+
+type ResearchItem = ResearchResult | ResearchError;
+
+interface SynthesisResult {
+    keyThemes: string[];
+    contradictions: string[];
+    confidenceAssessment: string;
+    recommendations: string[];
+    rawResponse?: string;
+}
+
+interface ResearchStats {
+    total: number;
+    successful: number;
+    failed: number;
+    totalDurationMs: number;
+    bySource: Record<string, { success: number; failed: number }>;
+}
+
+interface ResearchOutput {
+    success: boolean;
+    goal: string;
+    timestamp: string;
+    synthesis?: SynthesisResult | string;
+    concatenated?: string;
+    results: ResearchItem[];
+    stats: ResearchStats;
+    errors?: string[];
+    outputFile?: string;
+}
+
+// ============================================
+// HELPERS
+// ============================================
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/**
+ * Retry with exponential backoff and jitter
+ */
+async function retry<T>(
     fn: () => Promise<T>,
-    maxRetries: number = 3,
-    baseDelay: number = 1000
+    label: string,
+    options: {
+        maxRetries?: number;
+        baseDelay?: number;
+        maxDelay?: number;
+        onRetry?: (attempt: number, error: Error) => void;
+    } = {}
 ): Promise<T> {
-    let lastError: any;
+    const { maxRetries = 3, baseDelay = 1000, maxDelay = 10000, onRetry } = options;
+    let lastError: Error | undefined;
+
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
             return await fn();
         } catch (err) {
-            lastError = err;
+            lastError = err as Error;
             if (attempt < maxRetries - 1) {
-                const delay = baseDelay * Math.pow(2, attempt);
-                await new Promise(resolve => setTimeout(resolve, delay));
+                // Exponential backoff with jitter
+                const delay = Math.min(
+                    baseDelay * Math.pow(2, attempt) + Math.random() * 500,
+                    maxDelay
+                );
+                onRetry?.(attempt + 1, lastError);
+                await sleep(delay);
             }
         }
     }
     throw lastError;
 }
 
+/**
+ * Wrap operation with error capture and timing - never throws
+ */
+async function safeExecute<T>(
+    fn: () => Promise<T>,
+    source: ResearchItem['source'],
+    identifier: string
+): Promise<ResearchResult | ResearchError> {
+    const start = Date.now();
+    try {
+        const data = await fn();
+        return {
+            source,
+            identifier,
+            data,
+            error: null,
+            durationMs: Date.now() - start
+        };
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+            source,
+            identifier,
+            data: null,
+            error: message,
+            durationMs: Date.now() - start
+        };
+    }
+}
+
+/**
+ * Process items in batches with rate limiting
+ */
+async function processBatches<T, R>(
+    items: T[],
+    processor: (item: T) => Promise<R>,
+    options: { batchSize?: number; delayMs?: number } = {}
+): Promise<R[]> {
+    const { batchSize = 5, delayMs = 500 } = options;
+    const results: R[] = [];
+
+    for (let i = 0; i < items.length; i += batchSize) {
+        const batch = items.slice(i, i + batchSize);
+        const batchResults = await Promise.all(batch.map(processor));
+        results.push(...batchResults);
+
+        // Rate limit between batches
+        if (i + batchSize < items.length) {
+            await sleep(delayMs);
+        }
+    }
+
+    return results;
+}
+
+/**
+ * Check if file path is writable
+ */
+async function validateOutputPath(filePath: string): Promise<{ valid: boolean; error?: string }> {
+    try {
+        const dir = path.dirname(filePath);
+        await fs.access(dir, fs.constants.W_OK);
+        return { valid: true };
+    } catch {
+        try {
+            // Try to create directory
+            await fs.mkdir(path.dirname(filePath), { recursive: true });
+            return { valid: true };
+        } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            return { valid: false, error: `Cannot write to ${filePath}: ${message}` };
+        }
+    }
+}
+
+/**
+ * Truncate text with ellipsis
+ */
+function truncate(text: string, maxLength: number): string {
+    if (text.length <= maxLength) return text;
+    return text.substring(0, maxLength - 3) + '...';
+}
+
+/**
+ * Safely stringify data for concatenation
+ */
+function safeStringify(data: unknown, maxLength = 10000): string {
+    try {
+        const str = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+        return truncate(str, maxLength);
+    } catch {
+        return '[Unable to stringify data]';
+    }
+}
+
+/**
+ * Build synthesis prompt from results
+ */
+function buildSynthesisPrompt(goal: string, results: ResearchResult[]): string {
+    const findings = results.map((r, i) => {
+        const dataStr = safeStringify(r.data, 2000);
+        return `[${i + 1}. ${r.source.toUpperCase()}: ${r.identifier}]\n${dataStr}`;
+    }).join('\n\n---\n\n');
+
+    return `You are a research analyst synthesizing findings for this goal:
+"${goal}"
+
+## Research Findings
+
+${findings}
+
+## Your Task
+
+Analyze these findings and provide a structured synthesis:
+
+1. **Key Themes** (3-5 bullet points): Main ideas that appear across sources
+2. **Contradictions**: Any conflicting information between sources
+3. **Confidence Assessment**: How reliable are these findings? What's missing?
+4. **Recommendations** (3-5 bullet points): Actionable next steps or areas needing more research
+
+Be concise and focus on insights relevant to the stated goal.`;
+}
+
+/**
+ * Format results as concatenated text
+ */
+function formatConcatenated(results: ResearchResult[]): string {
+    return results.map(r => {
+        const separator = '='.repeat(80);
+        const dataStr = safeStringify(r.data, 15000);
+        return `
+${separator}
+SOURCE: ${r.source.toUpperCase()}
+IDENTIFIER: ${r.identifier}
+FETCHED IN: ${r.durationMs}ms
+${separator}
+
+${dataStr}
+`;
+    }).join('\n');
+}
+
+/**
+ * Calculate stats from results
+ */
+function calculateStats(results: ResearchItem[], totalDurationMs: number): ResearchStats {
+    const bySource: Record<string, { success: number; failed: number }> = {};
+
+    for (const r of results) {
+        if (!bySource[r.source]) {
+            bySource[r.source] = { success: 0, failed: 0 };
+        }
+        if (r.error) {
+            bySource[r.source].failed++;
+        } else {
+            bySource[r.source].success++;
+        }
+    }
+
+    return {
+        total: results.length,
+        successful: results.filter(r => !r.error).length,
+        failed: results.filter(r => r.error).length,
+        totalDurationMs,
+        bySource
+    };
+}
+
+// ============================================
+// WORKFLOW DEFINITION
+// ============================================
+
 export const workflow: WorkflowDefinition = {
     name: 'research',
-    description: 'A comprehensive, multi-source research workflow designed for complex technical inquiries. It orchestrates parallel data fetching from Context7 (library documentation), Wikipedia (general knowledge), and Perplexity (web search & Q&A). Features include: 1) Parallel execution for speed, 2) Robust retry logic with exponential backoff, 3) Optional LLM-based synthesis of findings, and 4) File output capabilities. Use this workflow when you need to deeply understand a topic, library, or problem by gathering information from multiple authoritative sources simultaneously.',
+
+    description: `Multi-source research aggregator with parallel execution and synthesis |
+USAGE: Orchestrates data fetching from Context7 (library docs), Wikipedia (concepts),
+and Perplexity (web Q&A). Supports parallel execution, retry logic, rate limiting,
+optional LLM synthesis, and file output.
+EXAMPLE: "Research xsync library performance vs sync.Map with benchmarks and theory"
+PARAMETERS:
+- goal: Primary research objective (required)
+- libraryIDs: Context7 library IDs for docs ["puzpuzpuz/xsync"] (optional)
+- queries: Perplexity questions ["xsync benchmarks?"] (optional)
+- wikipediaTopics: Wikipedia articles ["Lock-free data structures"] (optional)
+- synthesize: LLM synthesis of findings (optional, default: false)
+- outputFile: Path to save TOON-compressed results (optional)
+- batchSize: Max parallel requests per source (optional, default: 5)
+REQUIRES: At least one of: context7, wikipedia, perplexity (optional: brave-search as fallback)
+NOTES: Gracefully degrades if MCPs unavailable. Large outputs auto-TOON-encode.`,
 
     parameters: {
         goal: {
             type: 'string',
-            description: 'The primary objective of the research. Be specific about what you want to achieve (e.g., "Analyze the thread-safety of the xsync library and compare it to standard Go sync maps").',
+            description: 'Primary research objective - be specific about what you want to learn',
             required: true
         },
         libraryIDs: {
             type: 'array',
-            description: 'List of Context7-compatible library IDs to fetch full documentation for. Use this for deep technical dives into specific libraries (e.g., ["nodejs/node", "expressjs/express", "uber-go/zap"]).',
+            description: 'Context7 library IDs for documentation (e.g., ["uber-go/zap", "puzpuzpuz/xsync"])',
             required: false
         },
         queries: {
             type: 'array',
-            description: 'List of specific questions to ask Perplexity. Use this for finding best practices, comparisons, troubleshooting, or information not found in standard docs (e.g., ["What are the performance trade-offs of xsync vs sync.Map?", "Common pitfalls when using zap logger"]).',
+            description: 'Questions for Perplexity web search (e.g., ["xsync vs sync.Map benchmarks"])',
             required: false
         },
         wikipediaTopics: {
             type: 'array',
-            description: 'List of Wikipedia article titles to fetch. Use this for foundational concepts, algorithms, or theoretical background (e.g., ["Queueing theory", "Little\'s law", "Distributed hash table"]).',
+            description: 'Wikipedia article titles (e.g., ["Lock-free data structures", "Little\'s law"])',
             required: false
         },
         synthesize: {
             type: 'boolean',
-            description: 'If true, performs an additional step using Perplexity to analyze all gathered data and generate a structured summary (Key Themes, Contradictions, Recommendations). If false, returns raw concatenated data. Default: false.',
-            required: false
+            description: 'Use LLM to synthesize findings into structured summary',
+            required: false,
+            default: false
         },
         outputFile: {
             type: 'string',
-            description: 'Absolute path to save the complete research result as a JSON file. Useful for persisting large research sessions for later analysis. (e.g., "/home/user/research/auth_study.json")',
+            description: 'Path to save TOON-compressed research results',
             required: false
+        },
+        batchSize: {
+            type: 'number',
+            description: 'Max parallel requests per source (rate limiting)',
+            required: false,
+            default: 5
         }
     },
 
     async execute(params, context) {
-        const { goal, libraryIDs = [], queries = [], wikipediaTopics = [], synthesize = false, outputFile } = params;
-        const results: any[] = [];
+        const {
+            goal,
+            libraryIDs = [],
+            queries = [],
+            wikipediaTopics = [],
+            synthesize = false,
+            outputFile,
+            batchSize = 5
+        } = params;
 
-        // Helper to log structured thoughts
-        const think = async (thought: string, step: number, total: number) => {
+        const startTime = Date.now();
+        const allResults: ResearchItem[] = [];
+        const errors: string[] = [];
+        const warnings: string[] = [];
+
+        // ========================================
+        // STEP 1: Progress logging setup
+        // ========================================
+        const hasLibraries = libraryIDs.length > 0;
+        const hasWikipedia = wikipediaTopics.length > 0;
+        const hasQueries = queries.length > 0;
+
+        // Calculate total steps dynamically
+        let totalSteps = 2; // Plan + Final
+        if (hasLibraries) totalSteps++;
+        if (hasWikipedia) totalSteps++;
+        if (hasQueries) totalSteps++;
+        if (synthesize) totalSteps++;
+        if (outputFile) totalSteps++;
+
+        let currentStep = 1;
+
+        const logProgress = async (message: string) => {
+            console.error(`[research] [${currentStep}/${totalSteps}] ${message}`);
             if (context.servers['sequential-thinking']) {
                 try {
                     await context.servers['sequential-thinking'].sequentialthinking({
-                        thought,
-                        thoughtNumber: step,
-                        totalThoughts: total,
-                        nextThoughtNeeded: step < total
+                        thought: message,
+                        thoughtNumber: currentStep,
+                        totalThoughts: totalSteps,
+                        nextThoughtNeeded: currentStep < totalSteps
                     });
-                } catch (err) {
+                } catch {
                     // Silent fail for logging
                 }
             }
+            currentStep++;
         };
 
-        const totalSteps = 6;
-        let currentStep = 1;
+        // ========================================
+        // STEP 2: Research plan
+        // ========================================
+        const planSummary = [
+            `Goal: "${truncate(goal, 100)}"`,
+            hasLibraries ? `Libraries: ${libraryIDs.length}` : null,
+            hasWikipedia ? `Wikipedia: ${wikipediaTopics.length}` : null,
+            hasQueries ? `Queries: ${queries.length}` : null,
+            `Synthesis: ${synthesize ? 'yes' : 'no'}`,
+            outputFile ? `Output: ${path.basename(outputFile)}` : null
+        ].filter(Boolean).join(' | ');
 
-        // Step 1: Plan
-        await think(
-            `Research Plan for: "${goal}"\n` +
-            `- Libraries to fetch: ${libraryIDs.length > 0 ? libraryIDs.join(', ') : 'none'}\n` +
-            `- Wikipedia topics: ${wikipediaTopics.length > 0 ? wikipediaTopics.join(', ') : 'none'}\n` +
-            `- Perplexity queries: ${queries.length > 0 ? queries.length : 'none'}\n` +
-            `Strategy: Parallel execution with retry logic + synthesis`,
-            currentStep++,
-            totalSteps
-        );
+        await logProgress(`Research plan: ${planSummary}`);
 
-        // Step 2: Fetch ALL documentation in parallel (Context7)
-        if (libraryIDs.length > 0 && context.servers['context7']) {
-            await think(`Fetching ${libraryIDs.length} libraries in parallel...`, currentStep++, totalSteps);
+        // Check MCP availability
+        const availableMCPs: string[] = [];
+        if (context.servers['context7']) availableMCPs.push('context7');
+        if (context.servers['wikipedia']) availableMCPs.push('wikipedia');
+        if (context.servers['perplexity']) availableMCPs.push('perplexity');
+        if (context.servers['brave-search']) availableMCPs.push('brave-search');
 
-            const docPromises = libraryIDs.map((libraryID: string) =>
-                retryWithBackoff(async () => {
-                    const docs = await context.servers['context7']['get-library-docs']({
-                        context7CompatibleLibraryID: libraryID
-                    });
-                    return { source: 'context7', libraryID, data: docs };
-                }).catch(err => ({
-                    source: 'context7',
-                    libraryID,
-                    error: err.message
-                }))
-            );
-
-            const docResults = await Promise.all(docPromises);
-            results.push(...docResults);
-
-            const successCount = docResults.filter(r => !r.error).length;
-            await think(`✓ Fetched ${successCount}/${libraryIDs.length} libraries`, currentStep++, totalSteps);
-        } else {
-            currentStep++; // Skip doc step
+        if (availableMCPs.length === 0) {
+            return {
+                success: false,
+                goal,
+                timestamp: new Date().toISOString(),
+                results: [],
+                stats: calculateStats([], Date.now() - startTime),
+                errors: ['No research MCPs available. Need at least one of: context7, wikipedia, perplexity']
+            };
         }
 
-        // Step 3: Fetch Wikipedia articles in parallel
-        if (wikipediaTopics.length > 0 && context.servers['wikipedia']) {
-            await think(`Fetching ${wikipediaTopics.length} Wikipedia articles in parallel...`, currentStep++, totalSteps);
+        console.error(`[research] Available MCPs: ${availableMCPs.join(', ')}`);
 
-            const wikiPromises = wikipediaTopics.map((topic: string) =>
-                retryWithBackoff(async () => {
-                    // Use readArticle method (not summary)
-                    const article = await context.servers['wikipedia'].readArticle({
-                        title: topic
-                    });
-                    return { source: 'wikipedia', topic, data: article };
-                }).catch(err => ({
-                    source: 'wikipedia',
-                    topic,
-                    error: err.message
-                }))
-            );
+        // ========================================
+        // STEP 3: Fetch Context7 library docs
+        // ========================================
+        if (hasLibraries) {
+            if (context.servers['context7']) {
+                await logProgress(`Fetching ${libraryIDs.length} libraries from Context7...`);
 
-            const wikiResults = await Promise.all(wikiPromises);
-            results.push(...wikiResults);
+                const libResults = await processBatches(
+                    libraryIDs,
+                    (libraryID: string) => safeExecute(
+                        () => retry(
+                            () => context.servers['context7']['get-library-docs']({
+                                context7CompatibleLibraryID: libraryID
+                            }),
+                            `context7:${libraryID}`
+                        ),
+                        'context7',
+                        libraryID
+                    ),
+                    { batchSize, delayMs: 300 }
+                );
 
-            const successCount = wikiResults.filter(r => !r.error).length;
-            await think(`✓ Fetched ${successCount}/${wikipediaTopics.length} Wikipedia articles`, currentStep++, totalSteps);
-        } else {
-            currentStep++; // Skip Wikipedia step
+                allResults.push(...libResults);
+                const success = libResults.filter(r => !r.error).length;
+                console.error(`[research] Context7: ${success}/${libraryIDs.length} successful`);
+            } else {
+                warnings.push('context7 MCP not available - skipping library docs');
+                console.error(`[research] Warning: context7 not available`);
+            }
         }
 
-        // Step 4: Ask ALL queries in parallel (Perplexity)
-        if (queries.length > 0 && context.servers['perplexity']) {
-            await think(`Executing ${queries.length} queries in parallel...`, currentStep++, totalSteps);
+        // ========================================
+        // STEP 4: Fetch Wikipedia articles
+        // ========================================
+        if (hasWikipedia) {
+            if (context.servers['wikipedia']) {
+                await logProgress(`Fetching ${wikipediaTopics.length} Wikipedia articles...`);
 
-            const queryPromises = queries.map((query: string) =>
-                retryWithBackoff(async () => {
-                    const response = await context.servers['perplexity'].perplexity_ask({
-                        messages: [{ role: 'user', content: query }]
-                    });
-                    return { source: 'perplexity', query, data: response };
-                }).catch(err => ({
-                    source: 'perplexity',
-                    query,
-                    error: err.message
-                }))
-            );
+                const wikiResults = await processBatches(
+                    wikipediaTopics,
+                    (topic: string) => safeExecute(
+                        () => retry(
+                            () => context.servers['wikipedia'].readArticle({ title: topic }),
+                            `wikipedia:${topic}`
+                        ),
+                        'wikipedia',
+                        topic
+                    ),
+                    { batchSize, delayMs: 200 }
+                );
 
-            const queryResults = await Promise.all(queryPromises);
-            results.push(...queryResults);
-
-            const successCount = queryResults.filter(r => !r.error).length;
-            await think(`✓ Answered ${successCount}/${queries.length} queries`, currentStep++, totalSteps);
-        } else {
-            currentStep++; // Skip query step
+                allResults.push(...wikiResults);
+                const success = wikiResults.filter(r => !r.error).length;
+                console.error(`[research] Wikipedia: ${success}/${wikipediaTopics.length} successful`);
+            } else {
+                warnings.push('wikipedia MCP not available - skipping articles');
+                console.error(`[research] Warning: wikipedia not available`);
+            }
         }
 
-        // Step 5: Synthesize or concatenate findings
-        let synthesis = null;
-        let concatenated = null;
-        const successfulResults = results.filter(r => !r.error);
-        const failedResults = results.filter(r => r.error);
+        // ========================================
+        // STEP 5: Execute Perplexity queries
+        // ========================================
+        if (hasQueries) {
+            // Prefer perplexity, fallback to brave-search
+            const searchServer = context.servers['perplexity'] || context.servers['brave-search'];
+            const searchSource: 'perplexity' | 'brave-search' = context.servers['perplexity']
+                ? 'perplexity'
+                : 'brave-search';
 
-        if (successfulResults.length > 0) {
-            if (synthesize && context.servers['perplexity']) {
-                // LLM-based synthesis
-                await think(`Synthesizing ${successfulResults.length} results...`, currentStep++, totalSteps);
+            if (searchServer) {
+                await logProgress(`Executing ${queries.length} queries via ${searchSource}...`);
 
-                try {
-                    const findingsText = successfulResults.map(r => {
-                        const source = r.source || 'unknown';
-                        const identifier = r.libraryID || r.topic || r.query || 'unknown';
-                        const dataStr = typeof r.data === 'string' ? r.data : JSON.stringify(r.data);
-                        // Safely limit length and escape
-                        return `[${source.toUpperCase()}: ${identifier}]\n${dataStr.substring(0, 1000)}...`;
-                    }).join('\n\n');
+                const queryResults = await processBatches(
+                    queries,
+                    (query: string) => safeExecute(
+                        () => retry(
+                            async () => {
+                                if (searchSource === 'perplexity') {
+                                    return context.servers['perplexity'].perplexity_ask({
+                                        messages: [{ role: 'user', content: query }]
+                                    });
+                                } else {
+                                    return context.servers['brave-search'].search({ query });
+                                }
+                            },
+                            `${searchSource}:${query}`
+                        ),
+                        searchSource,
+                        query
+                    ),
+                    { batchSize: Math.min(batchSize, 3), delayMs: 1000 } // More conservative for search APIs
+                );
 
-                    const synthesisPrompt = `Based on the following research findings for goal: "${goal}"
+                allResults.push(...queryResults);
+                const success = queryResults.filter(r => !r.error).length;
+                console.error(`[research] ${searchSource}: ${success}/${queries.length} successful`);
 
-${findingsText}
-
-Please synthesize these findings into:
-1. **Key Themes**: Main ideas across all sources
-2. **Contradictions**: Any conflicting information
-3. **Confidence Assessment**: How reliable are these findings
-4. **Recommendations**: Next steps or areas needing more research
-
-Provide a concise, structured summary.`;
-
-                    const synthesisResponse = await retryWithBackoff(async () => {
-                        return await context.servers['perplexity'].perplexity_ask({
-                            messages: [{ role: 'user', content: synthesisPrompt }]
-                        });
-                    });
-
-                    synthesis = synthesisResponse;
-                    await think(`✓ Synthesis complete`, currentStep++, totalSteps);
-                } catch (err: any) {
-                    await think(`✗ Synthesis failed: ${err.message}`, currentStep++, totalSteps);
+                if (searchSource === 'brave-search') {
+                    warnings.push('Using brave-search fallback (perplexity recommended for better results)');
                 }
             } else {
-                // Simple concatenation
-                await think(`Concatenating ${successfulResults.length} results...`, currentStep++, totalSteps);
-
-                concatenated = successfulResults.map(r => {
-                    const source = r.source || 'unknown';
-                    const identifier = r.libraryID || r.topic || r.query || 'unknown';
-                    // Safe stringification
-                    let dataStr: string;
-                    try {
-                        dataStr = typeof r.data === 'string' ? r.data : JSON.stringify(r.data, null, 2);
-                    } catch (e) {
-                        dataStr = '[Unable to stringify data]';
-                    }
-
-                    return `\n${'='.repeat(80)}\nSOURCE: ${source.toUpperCase()}\nIDENTIFIER: ${identifier}\n${'='.repeat(80)}\n${dataStr}\n`;
-                }).join('\n');
-
-                await think(`✓ Concatenation complete`, currentStep++, totalSteps);
+                warnings.push('No search MCP available (perplexity or brave-search) - skipping queries');
+                console.error(`[research] Warning: no search MCP available`);
             }
-        } else {
-            currentStep++; // Skip synthesis/concatenation
         }
 
-        // Step 6: Optional file output
-        if (outputFile && (synthesis || concatenated)) {
-            try {
-                const fs = await import('fs/promises');
-                const path = await import('path');
+        // ========================================
+        // STEP 6: Synthesis or concatenation
+        // ========================================
+        const successfulResults = allResults.filter((r): r is ResearchResult => !r.error);
+        const failedResults = allResults.filter(r => r.error);
 
+        let synthesis: string | SynthesisResult | undefined;
+        let concatenated: string | undefined;
+
+        if (successfulResults.length === 0) {
+            errors.push('No successful results to synthesize');
+        } else if (synthesize) {
+            if (context.servers['perplexity']) {
+                await logProgress(`Synthesizing ${successfulResults.length} results...`);
+
+                try {
+                    const prompt = buildSynthesisPrompt(goal, successfulResults);
+                    const response = await retry(
+                        () => context.servers['perplexity'].perplexity_ask({
+                            messages: [{ role: 'user', content: prompt }]
+                        }),
+                        'synthesis'
+                    );
+
+                    synthesis = typeof response === 'string' ? response : {
+                        keyThemes: [],
+                        contradictions: [],
+                        confidenceAssessment: 'See raw response',
+                        recommendations: [],
+                        rawResponse: safeStringify(response, 5000)
+                    };
+
+                    console.error(`[research] Synthesis complete`);
+                } catch (err: unknown) {
+                    const message = err instanceof Error ? err.message : String(err);
+                    errors.push(`Synthesis failed: ${message}`);
+                    // Fallback to concatenation
+                    concatenated = formatConcatenated(successfulResults);
+                }
+            } else {
+                warnings.push('perplexity not available for synthesis - using concatenation');
+                concatenated = formatConcatenated(successfulResults);
+            }
+        } else {
+            // Just concatenate
+            concatenated = formatConcatenated(successfulResults);
+        }
+
+        // ========================================
+        // STEP 7: Save output file
+        // ========================================
+        if (outputFile) {
+            await logProgress(`Saving results to ${path.basename(outputFile)}...`);
+
+            const pathCheck = await validateOutputPath(outputFile);
+            if (!pathCheck.valid) {
+                errors.push(pathCheck.error!);
+            } else {
                 const outputData = {
                     goal,
                     timestamp: new Date().toISOString(),
-                    summary: `Research complete: ${successfulResults.length} successful, ${failedResults.length} failed.\nTotal sources: ${libraryIDs.length} libraries, ${wikipediaTopics.length} Wikipedia articles, ${queries.length} queries.`,
-                    synthesis: synthesize ? synthesis : null,
-                    concatenated: synthesize ? null : concatenated,
-                    results,
-                    stats: {
-                        total: results.length,
-                        successful: successfulResults.length,
-                        failed: failedResults.length
-                    }
+                    synthesis: synthesis || undefined,
+                    results: allResults,
+                    stats: calculateStats(allResults, Date.now() - startTime),
+                    warnings: warnings.length > 0 ? warnings : undefined
                 };
 
-                // Use TOON encoding for file output
-                // We need to dynamically import TOON since this is a standalone workflow file
-                // In a real scenario, this would be available via context or global
-                // For now, we'll use a simple JSON fallback if TOON isn't globally available, 
-                // but we assume the environment provides it or we import it.
-
-                // Since we can't easily import from src in a compiled workflow without relative paths hell,
-                // and we want this to be portable, let's check if TOON is available in global scope (it might be injected)
-                // or just use a simplified TOON-like structure if not.
-
-                // Ideally, the context object should provide a helper for this.
-                // Let's assume for now we use JSON but with a .toon extension recommendation
-                // Wait, the user explicitly asked for TOON. 
-                // We should probably inject TOONEncoder into the context or import it.
-
-                // Use TOON encoding via context helper
-                // Exclude 'concatenated' from file output to avoid duplication with 'results'
-                const { concatenated: _ignore, ...fileOutputData } = outputData;
-                const toonData = context.encode(fileOutputData);
-
-                await fs.writeFile(outputFile, toonData, 'utf-8');
-                await think(`✓ Results written to ${outputFile}`, currentStep++, totalSteps);
-            } catch (err: any) {
-                await think(`✗ Failed to write file: ${err.message}`, currentStep++, totalSteps);
+                try {
+                    const toonData = context.encode(outputData);
+                    const absolutePath = path.resolve(process.cwd(), outputFile);
+                    await fs.writeFile(absolutePath, toonData, 'utf-8');
+                    console.error(`[research] ✓ Saved to ${absolutePath}`);
+                } catch (err: unknown) {
+                    const message = err instanceof Error ? err.message : String(err);
+                    errors.push(`Failed to write file: ${message}`);
+                }
             }
         }
 
-        // Final summary
-        const summary =
-            `Research complete: ${successfulResults.length} successful, ${failedResults.length} failed.\n` +
-            `Total sources: ${libraryIDs.length} libraries, ${wikipediaTopics.length} Wikipedia articles, ${queries.length} queries.`;
+        // ========================================
+        // FINAL: Build response
+        // ========================================
+        const totalDuration = Date.now() - startTime;
+        const stats = calculateStats(allResults, totalDuration);
 
-        await think(summary, totalSteps, totalSteps);
+        const summary = [
+            `Research complete in ${(totalDuration / 1000).toFixed(1)}s`,
+            `${stats.successful}/${stats.total} successful`,
+            failedResults.length > 0 ? `${failedResults.length} failed` : null
+        ].filter(Boolean).join(' | ');
 
-        return {
+        await logProgress(summary);
+
+        // Build final output
+        const output: ResearchOutput = {
+            success: errors.length === 0 && stats.successful > 0,
             goal,
-            summary,
-            synthesis: synthesize ? synthesis : undefined,
-            concatenated: synthesize ? undefined : concatenated,
-            outputFile: outputFile || undefined,
-            results,
-            stats: {
-                total: results.length,
-                successful: successfulResults.length,
-                failed: failedResults.length
-            }
+            timestamp: new Date().toISOString(),
+            synthesis: synthesis || undefined,
+            concatenated: !synthesis ? concatenated : undefined,
+            results: allResults,
+            stats,
+            errors: errors.length > 0 ? errors : undefined,
+            outputFile: outputFile || undefined
         };
+
+        // TOON-encode if large
+        if (JSON.stringify(output).length > 10000) {
+            return context.encode(output);
+        }
+
+        return output;
     }
-}
+};

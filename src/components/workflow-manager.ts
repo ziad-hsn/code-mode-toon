@@ -73,11 +73,32 @@ export class WorkflowManager {
             throw new Error(`Workflow '${name}' not found`);
         }
 
-        // Validate parameters (basic check)
+        // Validate parameters with helpful error messages
+        const missingParams: string[] = [];
         for (const [key, def] of Object.entries(workflow.parameters)) {
             if (def.required && params[key] === undefined) {
-                throw new Error(`Missing required parameter: ${key}`);
+                missingParams.push(key);
             }
+        }
+
+        if (missingParams.length > 0) {
+            const exampleParams: Record<string, any> = {};
+            for (const [key, def] of Object.entries(workflow.parameters)) {
+                if (def.required) {
+                    exampleParams[key] = def.description || `<${def.type}>`;
+                }
+            }
+
+            const usageExample = JSON.stringify({
+                workflowName: name,
+                parameters: exampleParams
+            }, null, 2);
+
+            throw new Error(
+                `Missing required parameter${missingParams.length > 1 ? 's' : ''}: ${missingParams.join(', ')}\n\n` +
+                `CORRECT USAGE:\n${usageExample}\n\n` +
+                `WORKFLOW: ${workflow.description}`
+            );
         }
 
         // Build Context
