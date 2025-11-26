@@ -37,15 +37,18 @@ export class TOONEncoder {
 
     // If array of objects with consistent structure
     if (arr.every(item => typeof item === 'object' && item !== null)) {
-      const fields = Array.from(new Set(arr.flatMap(Object.keys)));
+      // Flatten all objects to handle nested fields
+      const flattenedArr = arr.map(item => this.flattenObject(item));
+      const fields = Array.from(new Set(flattenedArr.flatMap(Object.keys)));
+
       const lines = [`${name}[${arr.length}]{${fields.join(',')}}:`];
 
-      for (const item of arr) {
+      for (const item of flattenedArr) {
         const values = fields.map(f => {
           const v = item[f];
           if (v === undefined || v === null) return '';
           const str = String(v);
-          if (str.includes(',') || str.includes('"')) {
+          if (str.includes(',') || str.includes('"') || str.includes('\n')) {
             return `"${str.replace(/"/g, '""')}"`;
           }
           return str;
@@ -60,6 +63,19 @@ export class TOONEncoder {
     return `${name}[${arr.length}]: ${arr.join(',')}`;
   }
 
+  private static flattenObject(obj: Record<string, any>, prefix = ''): Record<string, any> {
+    const result: Record<string, any> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      const newKey = prefix ? `${prefix}.${key}` : key;
+      if (typeof value === 'object' && value !== null) {
+        Object.assign(result, this.flattenObject(value, newKey));
+      } else {
+        result[newKey] = value;
+      }
+    }
+    return result;
+  }
+
   private static encodeArray(arr: any[]): string {
     if (arr.length === 0) return '[]';
 
@@ -68,7 +84,16 @@ export class TOONEncoder {
       const lines = [`[${arr.length}]{${fields.join(',')}}:`];
 
       for (const item of arr) {
-        const values = fields.map(f => String(item[f] ?? ''));
+        const values = fields.map(f => {
+          const v = item[f];
+          if (v === undefined || v === null) return '';
+          const str = String(v);
+          // Quote values containing comma, double-quote, or newline
+          if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+            return `"${str.replace(/"/g, '""')}"`;
+          }
+          return str;
+        });
         lines.push(values.join(','));
       }
 

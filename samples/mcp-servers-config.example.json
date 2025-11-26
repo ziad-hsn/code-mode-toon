@@ -6,29 +6,48 @@
     },
     "workspace-lsp": {
       "command": "mcp-language-server",
-      "args": ["--workspace", "/path/to/workspace", "--lsp", "gopls"],
+      "args": [
+        "--workspace",
+        "/path/to/workspace",
+        "--lsp",
+        "gopls"
+      ],
       "env": {
         "GOPLS_CONFIG": "{\"build.buildFlags\":[\"-tags=debug\"]}"
       }
     },
     "sequential-thinking": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
       "lazy": true
     },
     "structured-thinking": {
       "command": "npx",
-      "args": ["-y", "structured-thinking"],
+      "args": [
+        "-y",
+        "structured-thinking"
+      ],
       "lazy": true
     },
     "context7": {
       "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp", "--api-key", "<replace-with-context7-api-key>"],
+      "args": [
+        "-y",
+        "@upstash/context7-mcp",
+        "--api-key",
+        "<replace-with-context7-api-key>"
+      ],
       "lazy": true
     },
     "perplexity": {
       "command": "npx",
-      "args": ["-y", "server-perplexity-ask"],
+      "args": [
+        "-y",
+        "server-perplexity-ask"
+      ],
       "env": {
         "PERPLEXITY_API_KEY": "<replace-with-api-key>"
       },
@@ -36,8 +55,35 @@
     },
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/workspace"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/path/to/workspace"
+      ],
       "lazy": false
+    },
+    "wikipedia": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "wikipedia-mcp"
+      ]
+    },
+    "code-mode-toon": {
+      "command": "node",
+      "args": [
+        "/path/to/code-mode-toon/dist/code-mode-toon-server.js"
+      ],
+      "env": {
+        "CODE_MODE_TOON_CONFIG": "~/.cursor/mcp.json"
+      }
+    },
+    "kubernetes": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-server-kubernetes"
+      ]
     }
   },
   "optimizations": {

@@ -1,0 +1,27 @@
+# Development files
+.claude/
+.cursor/
+.github/
+.git/
+.vscode/
+
+# Personal/internal files
+*.pdf
+dummy_log.txt
+*.md
+!README.md
+!.workflows/README.md
+claude-skills/
+
+# Source files (dist is published)
+.workflows/*.ts
+src/
+
+# Config files
+tsconfig.json
+.gitignore
+.npmignore
+
+# Test files
+src/tests/
+dist/tests/
