@@ -4,6 +4,21 @@
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![NPM Version](https://img.shields.io/npm/v/code-mode-toon.svg)
 
+<table>
+  <tr>
+    <td>
+      <a href="https://glama.ai/mcp/servers/@ziad-hsn/code-mode-toon">
+        <img width="380" height="200" src="https://glama.ai/mcp/servers/@ziad-hsn/code-mode-toon/badge" alt="Glama MCP Server Badge" />
+      </a>
+    </td>
+    <td>
+      <strong>Listed on Glama MCP Directory</strong><br/>
+      One-click installation for AI assistants
+    </td>
+  </tr>
+</table>
+
+
 A lightweight **Model Context Protocol (MCP)** orchestrator designed for **efficiency at scale**. It features **TOON compression** (reducing token usage by 30-90%) and **Lazy Loading**, making it the ideal solution for complex, multi-tool agentic workflows.
 
 ## The "Context Trap" in Agentic Workflows
